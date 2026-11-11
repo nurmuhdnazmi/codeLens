@@ -17,7 +17,8 @@ python -m streamlit run app.py
 ```
 
 Open the local URL printed by Streamlit. Inspect the complete code, then click
-"Run approved example" to see its actual output. Stop the server with Ctrl+C.
+"Run approved example" to see its actual output. In guided mode, predict all four
+printed lines first. Use "Start new attempt" before running again. Stop with Ctrl+C.
 
 ## Execution boundary
 
@@ -44,15 +45,18 @@ boundary. Results persist within the current Streamlit session, not across a new
 - `app.py`: Streamlit page.
 - `codelens/catalogue.py`: immutable example and ID lookup.
 - `codelens/runner.py`: subprocess execution and structured results.
+- `codelens/interaction.py`: attempt state and prediction validation.
 - `pyproject.toml`: package configuration and dependencies.
 - `tests/`: catalogue and rendering checks using Streamlit's [AppTest](https://docs.streamlit.io/develop/api-reference/app-testing/st.testing.v1.apptest).
 
 ## Checks
 
-Codex checks: `.venv/bin/python -m pytest -q` passed all 34 tests;
+Codex checks: `.venv/bin/python -m pytest -q` passed all 63 tests;
 `.venv/bin/python -m pip check` found no broken requirements.
 Real subprocess tests cover output, repeat runs, execution boundaries, secret
 filtering, Python exceptions, explicit exits and timeout. Controlled doubles cover
 launch failure, partial timeout data, signal return codes and UI failure messages.
-AppTest checks real execution and persistence across reruns.
+State tests check validation, prediction locking and allowed transitions.
+AppTest checks both modes, real execution, resets, mode changes and duplicate-run
+prevention. The Stage 2 repeat-Run test now requires a new attempt between runs.
 Browser inspection is pending. Submission materials will be added later.
