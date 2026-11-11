@@ -1,7 +1,8 @@
 # CodeLens
 
-CodeLens is a prototype for inspecting simulated AI-generated Python suggestions,
-built for the University of Birmingham Intelligent Interactive Systems assignment.
+CodeLens is a prototype for students practising how to check Python code against a task’s requirements. Code can look convincing and run without errors while still producing the wrong result. The intended workflow asks users to predict what a suggested solution will do, run it and compare their prediction with the output. Planned feedback and follow-up questions will help them examine the behaviour and decide whether a proposed fix meets the requirements.
+
+Developed for the University of Birmingham’s Intelligent Interactive Systems module, building on my earlier work on developer understanding and verification effort in AI-assisted programming. The examples are deliberately constructed to represent suggestions someone might receive from an AI coding assistant.
 
 ## Run locally
 
