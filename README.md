@@ -3,11 +3,6 @@
 CodeLens is a prototype for inspecting simulated AI-generated Python suggestions,
 built for the University of Birmingham Intelligent Interactive Systems assignment.
 
-## Status
-
-Stage 1 displays one example with its task and source code.
-Code execution and the guided verification flow will follow in later stages.
-
 ## Run locally
 
 Use Python 3.11 or later. The interface uses Streamlit; tests use pytest.
@@ -20,18 +15,43 @@ python -m pytest -q
 python -m streamlit run app.py
 ```
 
-Open the local URL printed by Streamlit. Check that the "List append" example
-shows its task and code. Stop the server with Ctrl+C.
+Open the local URL printed by Streamlit. Inspect the complete code, then click
+"Run approved example" to see its actual output. Stop the server with Ctrl+C.
+
+## Execution boundary
+
+The runner accepts only a catalogue ID and resolves source internally.
+It uses the current interpreter in [isolated mode](https://docs.python.org/3.11/using/cmdline.html#cmdoption-I),
+an empty child environment, closed stdin, a temporary directory and no shell.
+The [two-second subprocess timeout](https://docs.python.org/3.11/library/subprocess.html#subprocess.run)
+kills and waits for the child; process creation itself may take longer.
+Elapsed time includes preparation and launch.
+
+An internal wrapper catches `Exception`, preserves its traceback and writes
+a marker used to recognise Python exceptions. Uncaught nonzero `SystemExit`,
+`KeyboardInterrupt`, signals and failures without that marker are abnormal exits.
+Timeout output may be partial; timeout and launch failure have no recorded exit code.
+Preparation failures also use the launch-failure status.
+Cleanup failures retain the execution evidence and show a separate warning.
+
+This is not an OS security sandbox: the child retains the user's file and network
+permissions. The marker is classification support for approved code, not a security
+boundary. Results persist within the current Streamlit session, not across a new session.
 
 ## Files
 
 - `app.py`: Streamlit page.
 - `codelens/catalogue.py`: immutable example and ID lookup.
+- `codelens/runner.py`: subprocess execution and structured results.
 - `pyproject.toml`: package configuration and dependencies.
 - `tests/`: catalogue and rendering checks using Streamlit's [AppTest](https://docs.streamlit.io/develop/api-reference/app-testing/st.testing.v1.apptest).
 
 ## Checks
 
-Recorded automated checks: `.venv/bin/python -m pytest -q` passed all seven tests;
+Codex checks: `.venv/bin/python -m pytest -q` passed all 34 tests;
 `.venv/bin/python -m pip check` found no broken requirements.
+Real subprocess tests cover output, repeat runs, execution boundaries, secret
+filtering, Python exceptions, explicit exits and timeout. Controlled doubles cover
+launch failure, partial timeout data, signal return codes and UI failure messages.
+AppTest checks real execution and persistence across reruns.
 Browser inspection is pending. Submission materials will be added later.

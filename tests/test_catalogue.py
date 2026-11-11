@@ -19,6 +19,11 @@ def test_lookup_returns_the_approved_example():
         "def append_item(item, values=[]):\n"
         "    values.append(item)\n"
         "    return values\n"
+        "\n"
+        "print(append_item(1))\n"
+        "print(append_item(2))\n"
+        "print(append_item(3, []))\n"
+        "print(append_item(4))\n"
     )
 
 
