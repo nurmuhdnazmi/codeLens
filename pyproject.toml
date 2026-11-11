@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codelens-iis"
+version = "0.1.0"
+description = "A prototype for inspecting simulated AI-generated Python suggestions."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["streamlit>=1.40,<2"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10"]
+
+[tool.setuptools.packages.find]
+include = ["codelens*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

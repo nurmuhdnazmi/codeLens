@@ -1,0 +1,30 @@
+# Python
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Local secrets and configuration
+.env
+.env.*
+.streamlit/secrets.toml
+secrets.*
+credentials.*
+*.pem
+*.key
+.aws/
+.codex/
+
+# Editor and OS files
+.idea/
+.vscode/
+.DS_Store
