@@ -1,9 +1,11 @@
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
+import json
 
 import pytest
 
 from codelens import interaction
 from codelens.runner import ExecutionResult
+from codelens.catalogue import get_example
 
 
 def result_with_status(status):
@@ -116,3 +118,191 @@ def test_a_new_attempt_has_no_previous_prediction_result_or_error():
 
     assert fresh.state == "ready"
     assert fresh.submitted_prediction is fresh.result is fresh.validation_error is None
+
+
+def completed_attempt(mode=interaction.GUIDED, status="success"):
+    return interaction.Attempt(mode=mode, example_id="list_append").begin("Prediction").finish(result_with_status(status))
+
+
+@pytest.mark.parametrize("phase", ["ready", "running"])
+def test_feedback_requires_completed_evidence(phase):
+    attempt = interaction.Attempt(mode=interaction.GUIDED, example_id="list_append")
+    if phase == "running":
+        attempt = attempt.begin("Prediction")
+
+    with pytest.raises(ValueError):
+        attempt.request_feedback()
+
+
+def test_run_only_cannot_request_feedback_or_submit_an_assessment():
+    attempt = completed_attempt(mode=interaction.RUN_ONLY)
+
+    with pytest.raises(ValueError):
+        attempt.request_feedback()
+    with pytest.raises(ValueError):
+        attempt.submit_assessment("Meets the task")
+
+
+@pytest.mark.parametrize("status", ["timeout", "launch_failure", "abnormal_exit"])
+def test_process_failures_block_feedback_and_verification(status):
+    attempt = completed_attempt(status=status)
+
+    with pytest.raises(ValueError):
+        attempt.request_feedback()
+    with pytest.raises(ValueError):
+        attempt.submit_assessment("Meets the task")
+    assert attempt.state == "failed"
+    assert attempt.metrics()["total_duration_seconds"] is None
+    assert attempt.metrics()["execution_duration_seconds"] == 0.01
+
+
+def test_feedback_uses_the_selected_catalogue_template_and_cannot_repeat(monkeypatch):
+    example = replace(get_example("list_append"), mock_explanation="Selected catalogue explanation")
+    monkeypatch.setattr(interaction, "get_example", lambda example_id: example)
+    attempt = completed_attempt()
+
+    explained = attempt.request_feedback()
+
+    assert explained.feedback == "Selected catalogue explanation"
+    assert explained.state == "feedback_ready"
+    assert explained.mock_feedback_request_count == 1
+    assert explained.execution_count == 1
+    assert explained.result == attempt.result
+    with pytest.raises(ValueError):
+        explained.request_feedback()
+
+
+def test_unexpected_exception_does_not_receive_the_normal_explanation():
+    attempt = completed_attempt(status="python_exception")
+
+    unavailable = attempt.request_feedback()
+
+    assert unavailable.state == "feedback_unavailable"
+    assert unavailable.feedback is None
+    assert unavailable.result == attempt.result
+    assert unavailable.mock_feedback_request_count == 1
+    assert unavailable.metrics()["verification_duration_seconds"] is None
+    with pytest.raises(ValueError):
+        unavailable.submit_assessment("Meets the task")
+
+
+def test_verification_requires_feedback_and_an_explicit_valid_selection():
+    attempt = completed_attempt()
+    with pytest.raises(ValueError):
+        attempt.submit_assessment("Meets the task")
+    explained = attempt.request_feedback()
+
+    for choice in (None, "", "invalid selection"):
+        rejected = explained.submit_assessment(choice)
+        assert rejected.state == "feedback_ready"
+        assert rejected.validation_error
+        assert rejected.assessment_choice is None
+        assert rejected.verification_correct is None
+        assert rejected.verification_submission_count == 0
+        assert rejected.verification_duration_seconds is None
+
+
+@pytest.mark.parametrize("choice, correct", [
+    ("Meets the task", True),
+    ("Does not meet the task", False),
+    ("Not sure", False),
+])
+def test_assessment_is_checked_deterministically_and_locked(choice, correct):
+    explained = completed_attempt().request_feedback()
+
+    verified = explained.submit_assessment(choice)
+
+    assert verified.state == "verified"
+    assert verified.assessment_choice == choice
+    assert verified.verification_correct is correct
+    assert verified.verification_submission_count == 1
+    assert verified.mock_feedback_request_count == verified.execution_count == 1
+    assert verified.validation_error is None
+    with pytest.raises(ValueError):
+        verified.submit_assessment("Does not meet the task")
+    with pytest.raises(ValueError):
+        verified.begin("Changed prediction")
+    with pytest.raises(ValueError):
+        verified.request_feedback()
+
+
+def test_guided_timing_boundaries_use_a_controlled_monotonic_clock(monkeypatch):
+    now = [10.0]
+    monkeypatch.setattr(interaction, "monotonic", lambda: now[0])
+    attempt = interaction.Attempt(mode=interaction.GUIDED, example_id="list_append")
+    now[0] = 15.0
+    rejected = attempt.begin(" ")
+    assert rejected.prediction_duration_seconds is None
+    assert rejected.execution_count == 0
+    now[0] = 20.0
+    running = rejected.begin("Prediction")
+    assert running.prediction_duration_seconds == 10.0
+    now[0] = 22.0
+    completed = running.finish(result_with_status("success"))
+    assert completed.total_duration_seconds is None
+    now[0] = 30.0
+    explained = completed.request_feedback()
+    now[0] = 35.0
+    rejected_choice = explained.submit_assessment(None)
+    assert rejected_choice.verification_duration_seconds is None
+    now[0] = 45.0
+    verified = rejected_choice.submit_assessment("Meets the task")
+    assert verified.verification_duration_seconds == 15.0
+    assert verified.total_duration_seconds == 35.0
+    assert verified.metrics()["execution_duration_seconds"] == 0.01
+    now[0] = 100.0
+    assert verified.metrics()["total_duration_seconds"] == 35.0
+    assert verified.metrics()["verification_duration_seconds"] == 15.0
+
+
+@pytest.mark.parametrize("status", ["success", "python_exception"])
+def test_run_only_total_ends_at_program_completion(monkeypatch, status):
+    now = [10.0]
+    monkeypatch.setattr(interaction, "monotonic", lambda: now[0])
+    attempt = interaction.Attempt(mode=interaction.RUN_ONLY, example_id="list_append")
+    now[0] = 20.0
+    running = attempt.begin()
+    now[0] = 22.0
+    completed = running.finish(result_with_status(status))
+    metrics = completed.metrics()
+    assert metrics["prediction_duration_seconds"] is None
+    assert metrics["verification_duration_seconds"] is None
+    assert metrics["total_duration_seconds"] == 12.0
+    assert metrics["verification_correct"] is None
+    now[0] = 100.0
+    assert completed.metrics() == metrics
+
+
+def test_metrics_export_uses_an_allowlist_without_free_text_or_secrets(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-secret-never-export")
+    result = replace(result_with_status("success"), stdout="sensitive stdout", stderr="sensitive traceback", error="sensitive error")
+    attempt = interaction.Attempt(mode=interaction.GUIDED, example_id="list_append").begin("sensitive prediction")
+    attempt = attempt.finish(result).request_feedback().submit_assessment("Meets the task")
+
+    metrics = attempt.metrics()
+
+    assert set(metrics) == {
+        "mode", "example_id", "state", "execution_count", "mock_feedback_request_count",
+        "verification_submission_count", "verification_correct", "prediction_duration_seconds",
+        "execution_duration_seconds", "verification_duration_seconds", "total_duration_seconds",
+    }
+    exported = json.dumps(metrics)
+    for private_text in ("sensitive", "test-secret-never-export", "Meets the task", get_example("list_append").source, attempt.feedback):
+        assert private_text not in exported
+    assert metrics["verification_correct"] is True
+
+
+def test_new_attempt_clears_feedback_assessment_and_metrics(monkeypatch):
+    now = [10.0]
+    monkeypatch.setattr(interaction, "monotonic", lambda: now[0])
+    previous = completed_attempt().request_feedback().submit_assessment("Meets the task")
+    now[0] = 30.0
+
+    fresh = interaction.Attempt(mode=previous.mode, example_id=previous.example_id)
+
+    assert fresh.feedback is fresh.assessment_choice is fresh.verification_correct is None
+    assert fresh.mock_feedback_request_count == fresh.verification_submission_count == fresh.execution_count == 0
+    assert fresh.prediction_duration_seconds is fresh.verification_duration_seconds is fresh.total_duration_seconds is None
+    assert fresh.metrics()["execution_duration_seconds"] is None
+    now[0] = 35.0
+    assert fresh.begin("Prediction").prediction_duration_seconds == 5.0

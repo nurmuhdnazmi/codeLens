@@ -1,3 +1,5 @@
+import json
+
 import streamlit as st
 
 from codelens.catalogue import get_example
@@ -9,9 +11,10 @@ def reset_attempt():
         mode=st.session_state["mode"], example_id="list_append",
     )
     st.session_state["prediction_input"] = ""
+    st.session_state["assessment_choice"] = None
 
 
-def show_evidence(result):
+def show_execution_status(result):
     st.subheader("Execution evidence")
     st.write(f"Status: {result.status}")
     exit_code = result.exit_code if result.exit_code is not None else "unavailable"
@@ -32,22 +35,16 @@ def show_evidence(result):
     if result.error and result.status != "launch_failure":
         st.warning(result.error)
 
+def show_stdout(result):
     st.subheader("stdout")
-    if result.stdout:
-        st.code(result.stdout, language="text")
-    else:
+    st.code(result.stdout, language="text")
+    if not result.stdout:
         st.caption("No stdout.")
-
-    st.subheader("stderr / traceback")
-    if result.stderr:
-        st.code(result.stderr, language="text")
-    else:
-        st.caption("No stderr.")
 
 
 st.set_page_config(page_title="CodeLens", layout="centered")
 st.title("CodeLens")
-st.info("Stage 3: one run per attempt.")
+st.info("Stage 4: one run per attempt.")
 
 if "mode" not in st.session_state:
     st.session_state["mode"] = interaction.RUN_ONLY
@@ -61,7 +58,7 @@ st.button("Start new attempt", key="new_attempt", on_click=reset_attempt)
 attempt = st.session_state["attempt"]
 guided = attempt.mode == interaction.GUIDED
 if guided:
-    st.caption("Guided mode supports prediction and execution only. Explanation and verification are planned.")
+    st.caption("Guided mode: predict, run, request mock feedback, then assess the proposed fix.")
 
 example = get_example(attempt.example_id)
 st.header(example.title)
@@ -78,7 +75,7 @@ if guided and attempt.state == "ready":
         "Predict all four printed lines", key="prediction_input",
         max_chars=interaction.MAX_PREDICTION_LENGTH,
     )
-if attempt.validation_error:
+if attempt.validation_error and attempt.state == "ready":
     st.error(attempt.validation_error)
 
 if st.button("Run approved example", key="run_example", disabled=attempt.state != "ready"):
@@ -93,12 +90,70 @@ if st.button("Run approved example", key="run_example", disabled=attempt.state !
         st.rerun()
 
 if attempt.result is not None:
+    show_execution_status(attempt.result)
     if guided:
         prediction_column, evidence_column = st.columns(2)
         with prediction_column:
             st.subheader("Submitted prediction")
-            st.text(attempt.submitted_prediction)
+            st.code(attempt.submitted_prediction, language="text")
         with evidence_column:
-            show_evidence(attempt.result)
+            show_stdout(attempt.result)
     else:
-        show_evidence(attempt.result)
+        show_stdout(attempt.result)
+
+    st.subheader("stderr / traceback")
+    if attempt.result.stderr:
+        st.code(attempt.result.stderr, language="text")
+    else:
+        st.caption("No stderr.")
+
+if guided and attempt.result is not None and attempt.result.status in ("success", "python_exception"):
+    if st.button("Explain my prediction", key="explain_prediction", disabled=attempt.state != "completed") and attempt.state == "completed":
+        st.session_state["attempt"] = attempt.request_feedback()
+        st.rerun()
+
+if attempt.mock_feedback_request_count:
+    st.subheader("Mock feedback")
+    st.caption("Mock feedback — predefined explanation; no LLM request.")
+    st.caption("This template does not semantically assess free-text predictions.")
+    if attempt.feedback is not None:
+        st.write(attempt.feedback)
+    else:
+        st.warning("The predefined normal-run explanation is unavailable for this unexpected exception. Inspect the traceback above.")
+
+if attempt.feedback is not None:
+    question = example.verification
+    st.subheader("Assess a proposed fix")
+    st.code(question.candidate_source, language="python")
+    st.caption("For inspection only; this replacement is not executed.")
+    if attempt.state == "verified":
+        st.write(question.question)
+        st.text(f"Submitted assessment: {attempt.assessment_choice}")
+    else:
+        selection = st.radio(question.question, question.choices, index=None, key="assessment_choice")
+        if attempt.validation_error:
+            st.error(attempt.validation_error)
+
+    if st.button("Submit assessment", key="submit_assessment", disabled=attempt.state == "verified") and attempt.state == "feedback_ready":
+        st.session_state["attempt"] = attempt.submit_assessment(selection)
+        st.rerun()
+
+    if attempt.state == "verified":
+        if attempt.verification_correct:
+            st.success("Correct for this question.")
+        elif attempt.assessment_choice == "Not sure":
+            st.info("Not sure recorded.")
+        else:
+            st.warning("Incorrect for this question.")
+        st.write(f"Catalogue answer: {question.answer}")
+        st.write(question.rationale)
+        st.caption("This single assessment does not establish comprehension or learning gains.")
+
+with st.expander("Current-attempt metrics"):
+    metrics = attempt.metrics()
+    st.json(metrics)
+    st.download_button(
+        "Download metrics JSON", data=json.dumps(metrics, indent=2),
+        file_name="codelens-attempt.json", mime="application/json", key="metrics_export",
+    )
+    st.caption("Reset or refresh loses this attempt unless exported. Times include idle time; the modes involve different activities. These are interaction records, not evidence of improved comprehension.")

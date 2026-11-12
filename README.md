@@ -1,6 +1,6 @@
 # CodeLens
 
-CodeLens is a prototype for students practising how to check Python code against a task’s requirements. Code can look convincing and run without errors while still producing the wrong result. The intended workflow asks users to predict what a suggested solution will do, run it and compare their prediction with the output. Planned feedback and follow-up questions will help them examine the behaviour and decide whether a proposed fix meets the requirements.
+CodeLens is a prototype for students practising how to check Python code against a task’s requirements. Code can look convincing and run without errors while still producing the wrong result. The intended workflow asks users to predict what a suggested solution will do, run it and compare their prediction with the output. A predefined explanation and a fixed proposed-fix question complete the current guided flow.
 
 Developed for the University of Birmingham’s Intelligent Interactive Systems module, building on my earlier work on developer understanding and verification effort in AI-assisted programming. The examples are deliberately constructed to represent suggestions someone might receive from an AI coding assistant.
 
@@ -16,47 +16,63 @@ python -m pytest -q
 python -m streamlit run app.py
 ```
 
-Open the local URL printed by Streamlit. Inspect the complete code, then click
-"Run approved example" to see its actual output. In guided mode, predict all four
-printed lines first. Use "Start new attempt" before running again. Stop with Ctrl+C.
+Open Streamlit's local URL. In guided mode, predict all four printed lines, run,
+request "Explain my prediction" and assess the replacement. The answer and rationale
+appear after submission. "Start new attempt" resets; Ctrl+C stops the server.
 
 ## Execution boundary
 
-The runner accepts only a catalogue ID and resolves source internally.
-It uses the current interpreter in [isolated mode](https://docs.python.org/3.11/using/cmdline.html#cmdoption-I),
-an empty child environment, closed stdin, a temporary directory and no shell.
-The [two-second subprocess timeout](https://docs.python.org/3.11/library/subprocess.html#subprocess.run)
-kills and waits for the child; process creation itself may take longer.
-Elapsed time includes preparation and launch.
+The runner resolves source from approved IDs. It uses the current interpreter in
+[isolated mode](https://docs.python.org/3.11/using/cmdline.html#cmdoption-I), an empty
+environment, closed stdin, a temporary directory and no shell. Its
+[two-second timeout](https://docs.python.org/3.11/library/subprocess.html#subprocess.run)
+stops the child; process creation may take longer. Duration includes preparation.
 
-An internal wrapper catches `Exception`, preserves its traceback and writes
-a marker used to recognise Python exceptions. Uncaught nonzero `SystemExit`,
-`KeyboardInterrupt`, signals and failures without that marker are abnormal exits.
-Timeout output may be partial; timeout and launch failure have no recorded exit code.
-Preparation failures also use the launch-failure status.
-Cleanup failures retain the execution evidence and show a separate warning.
+The wrapper marks caught `Exception` instances. Nonzero `SystemExit`,
+`KeyboardInterrupt`, signals and unmarked exits are abnormal. Unexpected exceptions
+retain their traceback but cannot receive the normal explanation or assessment.
+Runner/process failures block both actions. Timeout output may be partial; timeout
+and launch failure have no recorded exit code. Preparation failures use launch-failure
+status; cleanup warnings preserve evidence.
 
-This is not an OS security sandbox: the child retains the user's file and network
-permissions. The marker is classification support for approved code, not a security
-boundary. Results persist within the current Streamlit session, not across a new session.
+This is not an OS security sandbox: file and network permissions remain unchanged.
+The exception marker supports classification, not security.
+
+## Metrics
+
+The expandable section and JSON export contain only mode, example ID, state,
+counts, correctness and durations. Prediction and answer text, feedback, source,
+output, traceback and secrets are excluded. Data stays in session memory without
+automatic disk logging; reset, mode change or refresh loses it unless exported.
+
+Durations use a [monotonic clock](https://docs.python.org/3.11/library/time.html#time.monotonic):
+
+- Prediction: attempt creation to valid Run submission, guided mode only.
+- Verification: feedback availability to assessment submission.
+- Total: creation to assessment submission in guided mode, or program completion in Run-only.
+
+Execution duration comes from the runner. Unavailable durations are null, including
+total duration for unfinished or failed attempts. Counts include accepted Run and
+feedback requests, even when unavailable, and valid assessment submissions only.
+Correctness means matching the catalogue answer; "Not sure" records false.
+Times include idle time, and modes involve different activities. Neither these
+records nor the single question establish comprehension or learning gains.
+Reset cannot undo seeing previous output.
 
 ## Files
 
 - `app.py`: Streamlit page.
-- `codelens/catalogue.py`: immutable example and ID lookup.
+- `codelens/catalogue.py`: example, mock explanation and proposed-fix question.
 - `codelens/runner.py`: subprocess execution and structured results.
-- `codelens/interaction.py`: attempt state and prediction validation.
-- `pyproject.toml`: package configuration and dependencies.
-- `tests/`: catalogue and rendering checks using Streamlit's [AppTest](https://docs.streamlit.io/develop/api-reference/app-testing/st.testing.v1.apptest).
+- `codelens/interaction.py`: guarded attempt transitions, validation and metrics.
+- `tests/`: core checks and Streamlit [AppTest](https://docs.streamlit.io/develop/api-reference/app-testing/st.testing.v1.apptest) flows.
 
 ## Checks
 
-Codex checks: `.venv/bin/python -m pytest -q` passed all 63 tests;
+Codex checks: `.venv/bin/python -m pytest -q` passed all 93 tests;
 `.venv/bin/python -m pip check` found no broken requirements.
-Real subprocess tests cover output, repeat runs, execution boundaries, secret
-filtering, Python exceptions, explicit exits and timeout. Controlled doubles cover
-launch failure, partial timeout data, signal return codes and UI failure messages.
-State tests check validation, prediction locking and allowed transitions.
-AppTest checks both modes, real execution, resets, mode changes and duplicate-run
-prevention. The Stage 2 repeat-Run test now requires a new attempt between runs.
-Browser inspection is pending. Submission materials will be added later.
+Runner tests retain real execution; controlled doubles cover failure paths.
+Controlled clocks test timing without sleeps. AppTest covers all assessment choices,
+locking, reset, mode changes, reruns and export payloads. Layout checks now expect
+matching prediction/stdout code blocks. Browser layout and download delivery remain
+unchecked. Submission materials will be added later.

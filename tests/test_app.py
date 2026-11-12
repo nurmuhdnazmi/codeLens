@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 from unittest.mock import Mock
 
 import pytest
@@ -26,7 +27,7 @@ def test_page_displays_complete_source_without_executing(monkeypatch):
     assert len(page.code) == 1
     # Streamlit trims the final newline.
     assert page.code[0].value == example.source.removesuffix("\n")
-    assert "Stage 3" in page.info[0].value
+    assert "Stage 4" in page.info[0].value
     assert page.button(key="run_example").label == "Run approved example"
     assert not page.text_area
     assert page.session_state["attempt"].mode == interaction.RUN_ONLY
@@ -103,9 +104,12 @@ def test_page_distinguishes_failures_and_shows_evidence(monkeypatch, status, exi
     assert page.session_state["attempt"].state == ("completed" if status == "python_exception" else "failed")
     if mode == interaction.GUIDED:
         assert page.session_state["attempt"].submitted_prediction == "Submitted before failure"
-        assert page.columns[0].text[0].value == "Submitted before failure"
+        assert page.columns[0].code[0].value == "Submitted before failure"
         assert not page.text_area
-    assert [block.value for block in page.code[1:]] == ["partial output", "test stderr"]
+    expected_blocks = ["partial output", "test stderr"]
+    if mode == interaction.GUIDED:
+        expected_blocks.insert(0, "Submitted before failure")
+    assert [block.value for block in page.code[1:]] == expected_blocks
     assert f"Status: {status}" in [text.value for text in page.markdown]
     notices = [notice.value for notice in page.error] + [notice.value for notice in page.warning]
     assert any(message in notice for notice in notices)
@@ -176,7 +180,7 @@ def test_guided_prediction_is_saved_before_run_and_remains_locked(monkeypatch):
     monkeypatch.setattr(runner, "run_example", execute)
     page = AppTest.from_file(str(APP_PATH)).run()
     page.radio(key="mode").set_value(interaction.GUIDED).run()
-    assert "planned" in " ".join(text.value for text in page.caption)
+    assert "mock feedback" in " ".join(text.value for text in page.caption)
     assert page.text_area(key="prediction_input").proto.max_chars == 2000
     page.text_area(key="prediction_input").input("Draft prediction").run()
     assert page.session_state["attempt"].submitted_prediction is None
@@ -190,7 +194,7 @@ def test_guided_prediction_is_saved_before_run_and_remains_locked(monkeypatch):
     assert attempt.submitted_prediction == prediction
     assert attempt.result.stdout == "[1]\n[1, 2]\n[3]\n[1, 2, 4]\n"
     assert not page.text_area
-    assert page.columns[0].text[0].value == prediction
+    assert page.columns[0].code[0].value == prediction
     assert page.columns[1].code[0].value == "[1]\n[1, 2]\n[3]\n[1, 2, 4]"
     assert page.button(key="run_example").disabled
     execute.assert_called_once_with("list_append")
@@ -200,7 +204,7 @@ def test_guided_prediction_is_saved_before_run_and_remains_locked(monkeypatch):
     assert not page.exception
     assert page.session_state["attempt"].submitted_prediction == prediction
     assert page.session_state["attempt"].result == attempt.result
-    assert page.columns[0].text[0].value == prediction
+    assert page.columns[0].code[0].value == prediction
     assert execute.call_count == 1
 
     page.button(key="new_attempt").click().run()
@@ -300,3 +304,179 @@ def test_a_running_attempt_cannot_launch_again(monkeypatch):
 
     assert not page.exception
     execute.assert_not_called()
+
+
+def guided_page(monkeypatch):
+    execute = Mock(wraps=runner.run_example)
+    monkeypatch.setattr(runner, "run_example", execute)
+    page = AppTest.from_file(str(APP_PATH)).run()
+    page.radio(key="mode").set_value(interaction.GUIDED).run()
+    page.text_area(key="prediction_input").input("My four-line prediction").run()
+    return page, execute
+
+
+def test_feedback_controls_require_guided_completed_evidence(monkeypatch):
+    page, execute = guided_page(monkeypatch)
+    assert "explain_prediction" not in [button.key for button in page.button]
+    page.radio(key="mode").set_value(interaction.RUN_ONLY).run()
+    page.button(key="run_example").click().run()
+    assert not page.exception
+    assert "explain_prediction" not in [button.key for button in page.button]
+    assert "submit_assessment" not in [button.key for button in page.button]
+    execute.assert_called_once_with("list_append")
+
+
+@pytest.mark.parametrize("status", ["timeout", "launch_failure", "abnormal_exit"])
+def test_runner_failures_do_not_unlock_feedback_or_verification(monkeypatch, status):
+    page, execute = guided_page(monkeypatch)
+    execute.return_value = runner.ExecutionResult(
+        stdout="partial", stderr="failure details", exit_code=None,
+        status=status, elapsed_seconds=2,
+    )
+    page.button(key="run_example").click().run()
+    assert not page.exception
+    assert page.session_state["attempt"].state == "failed"
+    assert "explain_prediction" not in [button.key for button in page.button]
+    assert "submit_assessment" not in [button.key for button in page.button]
+    assert page.session_state["attempt"].metrics()["total_duration_seconds"] is None
+    execute.assert_called_once_with("list_append")
+
+
+def test_unexpected_exception_feedback_is_unavailable_and_traceback_stays_visible(monkeypatch):
+    page, execute = guided_page(monkeypatch)
+    execute.return_value = runner.ExecutionResult(
+        stdout="", stderr="Traceback: ValueError: unexpected", exit_code=1,
+        status="python_exception", elapsed_seconds=0.1,
+    )
+    page.button(key="run_example").click().run()
+    page.button(key="explain_prediction").click().run()
+    assert not page.exception
+    assert page.session_state["attempt"].state == "feedback_unavailable"
+    assert any("unavailable" in notice.value for notice in page.warning)
+    assert "Traceback: ValueError: unexpected" in [block.value for block in page.code]
+    assert get_example("list_append").mock_explanation not in [text.value for text in page.markdown]
+    assert "submit_assessment" not in [button.key for button in page.button]
+    execute.assert_called_once_with("list_append")
+
+
+@pytest.mark.parametrize("choice, correct, message", [
+    ("Meets the task", True, "Correct for this question"),
+    ("Does not meet the task", False, "Incorrect for this question"),
+    ("Not sure", False, "Not sure recorded"),
+])
+def test_complete_guided_flow_preserves_feedback_and_locks_assessment(monkeypatch, choice, correct, message):
+    page, execute = guided_page(monkeypatch)
+    example = get_example("list_append")
+    page.button(key="run_example").click().run()
+    assert example.verification.candidate_source.removesuffix("\n") not in [block.value for block in page.code]
+    assert page.columns[0].subheader[0].value == "Submitted prediction"
+    assert page.columns[1].subheader[0].value == "stdout"
+    assert page.columns[0].code[0].proto.language == page.columns[1].code[0].proto.language == "text"
+
+    page.button(key="explain_prediction").click().run()
+
+    assert not page.exception
+    explained = page.session_state["attempt"]
+    assert explained.state == "feedback_ready"
+    assert explained.feedback == example.mock_explanation
+    assert "Mock feedback — predefined explanation; no LLM request." in [text.value for text in page.caption]
+    assert any("does not semantically assess" in text.value for text in page.caption)
+    assert example.mock_explanation in [text.value for text in page.markdown]
+    assert example.verification.candidate_source.removesuffix("\n") in [block.value for block in page.code]
+    assert page.radio(key="assessment_choice").value is None
+    assert tuple(page.radio(key="assessment_choice").options) == example.verification.choices
+    assert example.verification.rationale not in [text.value for text in page.markdown]
+
+    page.button(key="submit_assessment").click().run()
+    assert page.error
+    assert page.session_state["attempt"].verification_submission_count == 0
+    assert page.session_state["attempt"].verification_correct is None
+    page.run()
+    assert page.session_state["attempt"].mock_feedback_request_count == 1
+    assert page.session_state["attempt"].feedback == explained.feedback
+    assert page.session_state["attempt"].verification_started_at == explained.verification_started_at
+
+    page.radio(key="assessment_choice").set_value(choice).run()
+    page.button(key="submit_assessment").click().run()
+
+    assert not page.exception
+    verified = page.session_state["attempt"]
+    assert verified.state == "verified"
+    assert verified.assessment_choice == choice
+    assert verified.verification_correct is correct
+    assert verified.verification_submission_count == 1
+    assert not page.error
+    assert not [radio for radio in page.radio if radio.key == "assessment_choice"]
+    notices = list(page.success) + list(page.warning) + list(page.info)
+    assert any(message in notice.value for notice in notices)
+    assert example.verification.rationale in [text.value for text in page.markdown]
+    assert example.verification.candidate_source.removesuffix("\n") in [block.value for block in page.code]
+    assert page.button(key="submit_assessment").disabled
+    assert page.button(key="explain_prediction").disabled
+    metrics = json.loads(page.json[0].value)
+    assert metrics == verified.metrics()
+    assert metrics["execution_count"] == metrics["mock_feedback_request_count"] == metrics["verification_submission_count"] == 1
+    assert metrics["total_duration_seconds"] is not None
+
+    page.run()
+    assert page.session_state["attempt"] == verified
+    assert json.loads(page.json[0].value) == metrics
+    execute.assert_called_once_with("list_append")
+
+
+@pytest.mark.parametrize("action", ["reset", "mode"])
+@pytest.mark.parametrize("submit", [False, True])
+def test_reset_or_mode_change_clears_feedback_selection_and_metrics(monkeypatch, action, submit):
+    page, execute = guided_page(monkeypatch)
+    page.button(key="run_example").click().run()
+    page.button(key="explain_prediction").click().run()
+    page.radio(key="assessment_choice").set_value("Meets the task").run()
+    if submit:
+        page.button(key="submit_assessment").click().run()
+
+    if action == "reset":
+        page.button(key="new_attempt").click().run()
+    else:
+        page.radio(key="mode").set_value(interaction.RUN_ONLY).run()
+        page.radio(key="mode").set_value(interaction.GUIDED).run()
+
+    assert not page.exception
+    fresh = page.session_state["attempt"]
+    assert fresh.state == "ready"
+    assert fresh.feedback is fresh.assessment_choice is fresh.verification_correct is None
+    assert fresh.execution_count == fresh.mock_feedback_request_count == fresh.verification_submission_count == 0
+    assert fresh.prediction_duration_seconds is fresh.verification_duration_seconds is fresh.total_duration_seconds is None
+    assert page.text_area(key="prediction_input").value == ""
+    assert "submit_assessment" not in [button.key for button in page.button]
+    assert len(page.code) == 1
+    execute.assert_called_once_with("list_append")
+
+    page.text_area(key="prediction_input").input("New prediction").run()
+    page.button(key="run_example").click().run()
+    page.button(key="explain_prediction").click().run()
+    assert not page.exception
+    assert page.radio(key="assessment_choice").value is None
+    assert execute.call_count == 2
+
+
+def test_download_receives_only_current_metrics_json(monkeypatch):
+    import streamlit as st
+
+    real_download = st.download_button
+    downloads = []
+
+    def record_download(label, data, **options):
+        downloads.append(json.loads(data))
+        return real_download(label, data, **options)
+
+    monkeypatch.setattr(st, "download_button", record_download)
+    page, execute = guided_page(monkeypatch)
+    page.button(key="run_example").click().run()
+    page.button(key="explain_prediction").click().run()
+    page.radio(key="assessment_choice").set_value("Meets the task").run()
+    page.button(key="submit_assessment").click().run()
+    assert not page.exception
+    assert downloads[-1] == page.session_state["attempt"].metrics()
+    assert "My four-line prediction" not in json.dumps(downloads[-1])
+    assert "Meets the task" not in json.dumps(downloads[-1])
+    execute.assert_called_once_with("list_append")
