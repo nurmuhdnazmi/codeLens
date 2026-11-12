@@ -3,12 +3,13 @@ import json
 import streamlit as st
 
 from codelens.catalogue import get_example, list_examples
-from codelens import interaction, runner
+from codelens import interaction, runner, live_feedback
 
 
 def reset_attempt():
     st.session_state["attempt"] = interaction.Attempt(
         mode=st.session_state["mode"], example_id=st.session_state["example_id"],
+        feedback_mode=st.session_state.get("feedback_mode", interaction.MOCK) if st.session_state["mode"] == interaction.GUIDED else interaction.MOCK,
     )
     st.session_state["prediction_input"] = ""
     st.session_state["assessment_choice"] = None
@@ -44,12 +45,14 @@ def show_stdout(result):
 
 st.set_page_config(page_title="CodeLens", layout="centered")
 st.title("CodeLens")
-st.info("Stage 5: one run per attempt.")
+st.info("Stage 6: one run per attempt.")
 
 if "mode" not in st.session_state:
     st.session_state["mode"] = interaction.RUN_ONLY
 if "example_id" not in st.session_state:
     st.session_state["example_id"] = "list_append"
+if "feedback_mode" not in st.session_state:
+    st.session_state["feedback_mode"] = interaction.MOCK
 if "attempt" not in st.session_state:
     reset_attempt()
 
@@ -65,7 +68,13 @@ st.button("Start new attempt", key="new_attempt", on_click=reset_attempt)
 attempt = st.session_state["attempt"]
 guided = attempt.mode == interaction.GUIDED
 if guided:
-    st.caption("Guided mode: predict, run, request mock feedback, then assess the proposed fix.")
+    st.radio("Feedback", interaction.FEEDBACK_MODES, key="feedback_mode", on_change=reset_attempt, horizontal=True)
+    st.caption("Changing feedback mode clears the current attempt.")
+    if attempt.feedback_mode == interaction.MOCK:
+        st.caption("Guided mode: predict, run, request mock feedback, then assess the proposed fix.")
+    else:
+        st.caption("Guided mode: predict, run, request live Gemini feedback, then assess the proposed fix.")
+        st.warning("Live Gemini sends the task, approved source and demonstration calls, locked prediction and execution evidence to Google. Do not enter personal or confidential information.")
 
 example = get_example(attempt.example_id)
 st.header(example.title)
@@ -115,8 +124,16 @@ if attempt.result is not None:
         st.caption("No stderr.")
 
 if guided and attempt.result is not None and attempt.result.status in ("success", "python_exception"):
-    if st.button("Explain my prediction", key="explain_prediction", disabled=attempt.state != "completed") and attempt.state == "completed":
-        st.session_state["attempt"] = attempt.request_feedback()
+    request_allowed = attempt.state == "completed" or (attempt.feedback_mode == interaction.LIVE_GEMINI and attempt.state == "feedback_failed")
+    request_label = "Retry Gemini feedback" if attempt.state == "feedback_failed" else "Explain my prediction"
+    if st.button(request_label, key="explain_prediction", disabled=not request_allowed) and request_allowed:
+        pending = attempt.request_feedback()
+        st.session_state["attempt"] = pending
+        if pending.state == "feedback_requesting":
+            state_caption.caption("Attempt state: feedback_requesting")
+            with st.spinner("Requesting Gemini feedback..."):
+                outcome = live_feedback.generate_feedback(pending.example_id, pending.submitted_prediction, pending.result)
+                st.session_state["attempt"] = pending.complete_live_feedback(outcome)
         st.rerun()
 
 if attempt.mock_feedback_request_count:
@@ -127,6 +144,18 @@ if attempt.mock_feedback_request_count:
         st.write(attempt.feedback)
     else:
         st.warning("The predefined explanation is unavailable for this execution evidence. Inspect the output and traceback above.")
+
+if guided and attempt.feedback_mode == interaction.LIVE_GEMINI and (attempt.live_feedback_request_attempts or attempt.state == "feedback_unavailable"):
+    st.subheader("Live Gemini feedback")
+    if attempt.feedback_model:
+        st.caption(f"Provider: Google Gemini | Model: {attempt.feedback_model}")
+    st.caption("Generated explanations may be wrong. Inspect them against the execution evidence.")
+    if attempt.feedback is not None:
+        st.markdown(attempt.feedback)
+    elif attempt.feedback_error:
+        st.error(live_feedback.ERROR_MESSAGES.get(attempt.feedback_error, live_feedback.ERROR_MESSAGES["provider"]))
+    elif attempt.state == "feedback_unavailable":
+        st.warning("Feedback is unavailable for this unexpected execution evidence. Inspect the output and traceback above.")
 
 if attempt.feedback is not None:
     question = example.verification

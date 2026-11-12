@@ -90,6 +90,7 @@ def test_real_child_has_no_application_secrets_and_closed_stdin(monkeypatch):
         "import json, os, sys\n"
         "print(json.dumps({\n"
         "    'api_key': os.getenv('OPENAI_API_KEY'),\n"
+        "    'gemini_key': os.getenv('GEMINI_API_KEY'),\n"
         "    'secret': os.getenv('CODELENS_SECRET'),\n"
         "    'isolated': sys.flags.isolated,\n"
         "    'stdin': sys.stdin.read(),\n"
@@ -100,7 +101,7 @@ def test_real_child_has_no_application_secrets_and_closed_stdin(monkeypatch):
 
     assert result.status == "success"
     assert json.loads(result.stdout) == {
-        "api_key": None, "secret": None, "isolated": 1, "stdin": "",
+        "api_key": None, "gemini_key": None, "secret": None, "isolated": 1, "stdin": "",
     }
 
 

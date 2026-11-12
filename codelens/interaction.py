@@ -1,15 +1,19 @@
 from dataclasses import dataclass, field, replace
 from time import monotonic
-from typing import Literal
+from typing import Final, Literal
 
 from codelens.runner import ExecutionResult
 from codelens.catalogue import get_example
+from codelens.live_feedback import FeedbackError, FeedbackOutcome
 
 
 RUN_ONLY = "Run-only"
 GUIDED = "Predict–Explain–Verify"
 MODES = (RUN_ONLY, GUIDED)
 MAX_PREDICTION_LENGTH = 2000
+MOCK: Final = "Mock"
+LIVE_GEMINI: Final = "Live Gemini"
+FEEDBACK_MODES = (MOCK, LIVE_GEMINI)
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,6 +24,7 @@ class Attempt:
     result: ExecutionResult | None = None
     state: Literal[
         "ready", "running", "completed", "failed", "feedback_ready", "feedback_unavailable", "verified",
+        "feedback_requesting", "feedback_failed",
     ] = "ready"
     validation_error: str | None = None
     feedback: str | None = None
@@ -33,6 +38,13 @@ class Attempt:
     prediction_duration_seconds: float | None = None
     verification_duration_seconds: float | None = None
     total_duration_seconds: float | None = None
+    feedback_mode: Literal["Mock", "Live Gemini"] = MOCK
+    feedback_error: FeedbackError | None = None
+    feedback_model: str | None = None
+    live_feedback_request_attempts: int = 0
+    live_feedback_success_count: int = 0
+    live_feedback_latency_seconds: float | None = None
+    live_feedback_started_at: float | None = field(default=None, repr=False)
 
     def begin(self, prediction: str = "") -> "Attempt":
         if self.state != "ready":
@@ -60,7 +72,8 @@ class Attempt:
 
     def request_feedback(self) -> "Attempt":
         if (
-            self.mode != GUIDED or self.state != "completed" or self.result is None
+            self.mode != GUIDED or self.result is None or self.feedback_mode not in FEEDBACK_MODES
+            or not (self.state == "completed" or (self.feedback_mode == LIVE_GEMINI and self.state == "feedback_failed"))
             or self.result.status not in ("success", "python_exception")
         ):
             raise ValueError("Feedback requires guided mode and completed program evidence.")
@@ -73,10 +86,33 @@ class Attempt:
             and self.result.exception_type == expected_exception
         )
         if not matches:
-            return replace(self, state="feedback_unavailable", mock_feedback_request_count=1)
+            return replace(self, state="feedback_unavailable", mock_feedback_request_count=1 if self.feedback_mode == MOCK else 0)
+        if self.feedback_mode == LIVE_GEMINI:
+            return replace(
+                self, state="feedback_requesting", feedback_error=None,
+                live_feedback_request_attempts=self.live_feedback_request_attempts + 1,
+                live_feedback_started_at=monotonic(),
+            )
         return replace(
             self, state="feedback_ready", feedback=example.mock_explanation,
             mock_feedback_request_count=1, verification_started_at=monotonic(),
+        )
+
+    def complete_live_feedback(self, outcome: FeedbackOutcome) -> "Attempt":
+        if self.feedback_mode != LIVE_GEMINI or self.state != "feedback_requesting" or self.live_feedback_started_at is None:
+            raise ValueError("Only a pending live request can accept a response.")
+        now = monotonic()
+        error = outcome.error or ("empty" if not outcome.text or not outcome.text.strip() else None)
+        if error:
+            return replace(
+                self, state="feedback_failed", feedback_error=error, feedback_model=outcome.model,
+                live_feedback_latency_seconds=now - self.live_feedback_started_at,
+            )
+        return replace(
+            self, state="feedback_ready", feedback=outcome.text, feedback_model=outcome.model,
+            feedback_error=None, live_feedback_success_count=self.live_feedback_success_count + 1,
+            live_feedback_latency_seconds=now - self.live_feedback_started_at,
+            verification_started_at=now,
         )
 
     def submit_assessment(self, choice: str | None) -> "Attempt":
@@ -111,4 +147,8 @@ class Attempt:
             "execution_duration_seconds": self.result.elapsed_seconds if self.result is not None else None,
             "verification_duration_seconds": self.verification_duration_seconds,
             "total_duration_seconds": self.total_duration_seconds,
+            "feedback_mode": self.feedback_mode,
+            "live_feedback_request_attempts": self.live_feedback_request_attempts,
+            "live_feedback_success_count": self.live_feedback_success_count,
+            "live_feedback_latency_seconds": self.live_feedback_latency_seconds,
         }

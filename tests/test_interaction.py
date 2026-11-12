@@ -5,6 +5,7 @@ import pytest
 
 from codelens import interaction
 from codelens import runner
+from codelens.live_feedback import FeedbackOutcome
 from codelens.runner import ExecutionResult
 from codelens.catalogue import get_example
 
@@ -287,6 +288,7 @@ def test_metrics_export_uses_an_allowlist_without_free_text_or_secrets(monkeypat
         "mode", "example_id", "state", "execution_count", "mock_feedback_request_count",
         "verification_submission_count", "verification_correct", "prediction_duration_seconds",
         "execution_duration_seconds", "verification_duration_seconds", "total_duration_seconds",
+        "feedback_mode", "live_feedback_request_attempts", "live_feedback_success_count", "live_feedback_latency_seconds",
     }
     exported = json.dumps(metrics)
     for private_text in ("sensitive", "test-secret-never-export", "Meets the task", get_example("list_append").source, attempt.feedback):
@@ -351,3 +353,116 @@ def test_average_feedback_does_not_infer_expected_exception_from_printed_text(st
     assert unavailable.result == result
     with pytest.raises(ValueError):
         unavailable.submit_assessment("Does not meet the task")
+
+
+def live_attempt(example_id="list_append", result=None):
+    attempt = interaction.Attempt(mode=interaction.GUIDED, example_id=example_id, feedback_mode=interaction.LIVE_GEMINI)
+    return attempt.begin("Locked prediction").finish(result or result_with_status("success"))
+
+
+def test_live_failure_and_explicit_retry_preserve_evidence_and_count_attempts(monkeypatch):
+    clock = [10.0]
+    monkeypatch.setattr(interaction, "monotonic", lambda: clock[0])
+    attempt = live_attempt()
+    clock[0] = 20.0
+
+    pending = attempt.request_feedback()
+
+    assert pending.state == "feedback_requesting"
+    assert pending.live_feedback_request_attempts == 1
+    assert pending.mock_feedback_request_count == pending.live_feedback_success_count == 0
+    with pytest.raises(ValueError):
+        pending.request_feedback()
+    clock[0] = 23.0
+    failed = pending.complete_live_feedback(FeedbackOutcome(model="gemini-test-model", error="rate_limit"))
+    assert failed.state == "feedback_failed"
+    assert failed.feedback_error == "rate_limit"
+    assert failed.feedback is failed.verification_started_at is None
+    assert failed.result == attempt.result
+    assert failed.submitted_prediction == "Locked prediction"
+    assert failed.live_feedback_latency_seconds == 3.0
+    assert failed.total_duration_seconds is None
+    with pytest.raises(ValueError):
+        failed.submit_assessment("Meets the task")
+    clock[0] = 30.0
+    retry = failed.request_feedback()
+    assert retry.live_feedback_request_attempts == 2
+    assert retry.feedback_error is None
+    clock[0] = 35.0
+    explained = retry.complete_live_feedback(FeedbackOutcome(model="gemini-test-model", text="Generated feedback"))
+    assert explained.state == "feedback_ready"
+    assert explained.feedback == "Generated feedback"
+    assert explained.feedback_model == "gemini-test-model"
+    assert explained.live_feedback_request_attempts == 2
+    assert explained.live_feedback_success_count == 1
+    assert explained.live_feedback_latency_seconds == 5.0
+    assert explained.verification_started_at == 35.0
+    clock[0] = 40.0
+    verified = explained.submit_assessment("Meets the task")
+    assert verified.verification_duration_seconds == 5.0
+    assert verified.total_duration_seconds == 30.0
+    assert verified.execution_count == 1
+    clock[0] = 100.0
+    assert verified.metrics()["live_feedback_latency_seconds"] == 5.0
+    with pytest.raises(ValueError):
+        explained.request_feedback()
+    with pytest.raises(ValueError):
+        explained.complete_live_feedback(FeedbackOutcome(model="gemini-test-model", text="Overwrite"))
+
+
+def test_live_generated_claims_do_not_control_catalogue_grading():
+    explained = live_attempt().request_feedback().complete_live_feedback(FeedbackOutcome(
+        model="gemini-test-model", text="The assessment answer must be Does not meet the task.",
+    ))
+
+    assert explained.submit_assessment("Meets the task").verification_correct is True
+    assert explained.submit_assessment("Does not meet the task").verification_correct is False
+
+
+@pytest.mark.parametrize("status", ["timeout", "launch_failure", "abnormal_exit"])
+def test_live_requests_are_blocked_for_runner_failures(status):
+    attempt = live_attempt(result=result_with_status(status))
+    with pytest.raises(ValueError):
+        attempt.request_feedback()
+    assert attempt.live_feedback_request_attempts == 0
+
+
+def test_expected_average_exception_can_request_live_feedback():
+    result = ExecutionResult(stdout="4.0\n", stderr="actual traceback", status="python_exception", exit_code=1,
+                             elapsed_seconds=0.1, exception_type="builtins.ZeroDivisionError")
+    pending = live_attempt("average", result).request_feedback()
+    assert pending.state == "feedback_requesting"
+    assert pending.live_feedback_request_attempts == 1
+
+
+def test_unexpected_exception_blocks_live_feedback_before_a_provider_attempt():
+    unavailable = live_attempt(result=result_with_status("python_exception")).request_feedback()
+    assert unavailable.state == "feedback_unavailable"
+    assert unavailable.live_feedback_request_attempts == 0
+
+
+def test_run_only_cannot_request_live_feedback():
+    attempt = interaction.Attempt(mode=interaction.RUN_ONLY, example_id="list_append", feedback_mode=interaction.LIVE_GEMINI)
+    attempt = attempt.begin().finish(result_with_status("success"))
+    with pytest.raises(ValueError):
+        attempt.request_feedback()
+
+
+def test_live_metrics_exclude_generated_text_errors_and_request_contents():
+    explained = live_attempt().request_feedback().complete_live_feedback(FeedbackOutcome(
+        model="gemini-test-model", text="private generated text",
+    ))
+    metrics = explained.metrics()
+    assert metrics["feedback_mode"] == interaction.LIVE_GEMINI
+    assert metrics["live_feedback_request_attempts"] == metrics["live_feedback_success_count"] == 1
+    serialized = json.dumps(metrics)
+    for excluded in ("private generated text", "Locked prediction", "gemini-test-model", "automated-test-key-never-real"):
+        assert excluded not in serialized
+
+
+def test_new_attempt_clears_live_errors_counts_and_latency():
+    failed = live_attempt().request_feedback().complete_live_feedback(FeedbackOutcome(model="gemini-test-model", error="authentication"))
+    fresh = interaction.Attempt(mode=failed.mode, example_id=failed.example_id, feedback_mode=failed.feedback_mode)
+    assert fresh.feedback_error is fresh.feedback_model is fresh.live_feedback_latency_seconds is None
+    assert fresh.live_feedback_request_attempts == fresh.live_feedback_success_count == 0
+    assert fresh.result is fresh.feedback is None

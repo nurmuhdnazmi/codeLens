@@ -7,7 +7,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from codelens.catalogue import get_example
-from codelens import interaction, runner
+from codelens import interaction, runner, live_feedback
 
 
 APP_PATH = Path(__file__).resolve().parents[1] / "app.py"
@@ -27,7 +27,7 @@ def test_page_displays_complete_source_without_executing(monkeypatch):
     assert len(page.code) == 1
     # Streamlit trims the final newline.
     assert page.code[0].value == example.source.removesuffix("\n")
-    assert "Stage 5" in page.info[0].value
+    assert "Stage 6" in page.info[0].value
     assert page.button(key="run_example").label == "Run approved example"
     assert not page.text_area
     assert page.session_state["attempt"].mode == interaction.RUN_ONLY
@@ -609,3 +609,151 @@ def test_mode_change_and_reset_keep_the_selected_example(monkeypatch):
     assert page.session_state["attempt"].example_id == "average"
     assert page.text_area(key="prediction_input").value == ""
     execute.assert_called_once_with("average")
+
+
+def live_page(monkeypatch):
+    page, execute = guided_page(monkeypatch)
+    assert page.radio(key="feedback_mode").value == interaction.MOCK
+    page.radio(key="feedback_mode").set_value(interaction.LIVE_GEMINI).run()
+    assert page.text_area(key="prediction_input").value == ""
+    page.text_area(key="prediction_input").input("Locked live prediction").run()
+    return page, execute
+
+
+def test_live_feedback_requires_click_and_explicit_retry_then_persists(monkeypatch):
+    provider = Mock(side_effect=[
+        live_feedback.FeedbackOutcome(model="gemini-test-model", error="rate_limit"),
+        live_feedback.FeedbackOutcome(model="gemini-test-model", text="Generated comparison; the assessment answer is Does not meet the task."),
+    ])
+    monkeypatch.setattr(live_feedback, "generate_feedback", provider)
+    page, execute = live_page(monkeypatch)
+    disclosure = " ".join(notice.value for notice in page.warning)
+    assert "Google" in disclosure and "confidential" in disclosure
+    provider.assert_not_called()
+
+    page.button(key="run_example").click().run()
+    evidence = page.session_state["attempt"].result
+    page.run()
+    provider.assert_not_called()
+    page.button(key="explain_prediction").click().run()
+
+    assert not page.exception
+    failed = page.session_state["attempt"]
+    assert failed.state == "feedback_failed"
+    assert failed.result == evidence
+    assert failed.submitted_prediction == "Locked live prediction"
+    assert failed.feedback is None
+    assert failed.live_feedback_request_attempts == 1
+    assert failed.live_feedback_success_count == failed.mock_feedback_request_count == 0
+    assert "submit_assessment" not in [button.key for button in page.button]
+    assert any("quota" in notice.value for notice in page.error)
+    page.run()
+    assert page.session_state["attempt"] == failed
+    assert provider.call_count == 1
+    assert page.button(key="explain_prediction").label == "Retry Gemini feedback"
+
+    page.button(key="explain_prediction").click().run()
+
+    assert not page.exception
+    explained = page.session_state["attempt"]
+    assert explained.state == "feedback_ready"
+    assert explained.result == evidence
+    assert explained.live_feedback_request_attempts == 2
+    assert explained.live_feedback_success_count == 1
+    assert explained.mock_feedback_request_count == 0
+    assert provider.call_args.args == ("list_append", "Locked live prediction", evidence)
+    assert any("Google Gemini" in text.value and "gemini-test-model" in text.value for text in page.caption)
+    assert any("may be wrong" in text.value for text in page.caption)
+    assert explained.feedback in [text.value for text in page.markdown]
+    page.radio(key="assessment_choice").set_value("Meets the task").run()
+    page.button(key="submit_assessment").click().run()
+    assert page.session_state["attempt"].verification_correct is True
+    finished = page.session_state["attempt"]
+    page.run()
+    assert page.session_state["attempt"] == finished
+    assert provider.call_count == 2
+    execute.assert_called_once_with("list_append")
+
+
+def test_missing_live_key_is_shown_without_fallback_or_api_call(monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    page, execute = live_page(monkeypatch)
+    page.button(key="run_example").click().run()
+    page.button(key="explain_prediction").click().run()
+    assert not page.exception
+    attempt = page.session_state["attempt"]
+    assert attempt.feedback_error == "missing_key"
+    assert attempt.feedback is None
+    assert attempt.live_feedback_request_attempts == 1
+    assert attempt.live_feedback_success_count == attempt.mock_feedback_request_count == 0
+    assert any("GEMINI_API_KEY" in notice.value for notice in page.error)
+    assert get_example("list_append").mock_explanation not in [text.value for text in page.markdown]
+    assert "submit_assessment" not in [button.key for button in page.button]
+    execute.assert_called_once_with("list_append")
+
+
+@pytest.mark.parametrize("action", ["feedback", "example", "mode", "reset"])
+def test_live_state_is_cleared_by_all_attempt_resets(monkeypatch, action):
+    provider = Mock(return_value=live_feedback.FeedbackOutcome(model="gemini-test-model", text="Generated comparison"))
+    monkeypatch.setattr(live_feedback, "generate_feedback", provider)
+    page, execute = live_page(monkeypatch)
+    page.button(key="run_example").click().run()
+    page.button(key="explain_prediction").click().run()
+    page.radio(key="assessment_choice").set_value("Meets the task").run()
+    page.button(key="submit_assessment").click().run()
+
+    if action == "feedback":
+        page.radio(key="feedback_mode").set_value(interaction.MOCK).run()
+    elif action == "example":
+        page.selectbox(key="example_id").set_value("average").run()
+    elif action == "mode":
+        page.radio(key="mode").set_value(interaction.RUN_ONLY).run()
+    else:
+        page.button(key="new_attempt").click().run()
+
+    assert not page.exception
+    fresh = page.session_state["attempt"]
+    assert fresh.state == "ready"
+    assert fresh.result is fresh.feedback is fresh.assessment_choice is fresh.submitted_prediction is None
+    assert fresh.feedback_error is fresh.feedback_model is fresh.live_feedback_latency_seconds is None
+    assert fresh.live_feedback_request_attempts == fresh.live_feedback_success_count == fresh.mock_feedback_request_count == 0
+    assert fresh.execution_count == fresh.verification_submission_count == 0
+    if action == "mode":
+        assert not [radio for radio in page.radio if radio.key == "feedback_mode"]
+        assert fresh.feedback_mode == interaction.MOCK
+    else:
+        assert page.text_area(key="prediction_input").value == ""
+    assert provider.call_count == 1
+    assert execute.call_count == 1
+
+
+@pytest.mark.parametrize("status", ["timeout", "abnormal_exit", "python_exception"])
+def test_live_provider_is_not_called_for_ineligible_evidence(monkeypatch, status):
+    provider = Mock()
+    monkeypatch.setattr(live_feedback, "generate_feedback", provider)
+    page, execute = live_page(monkeypatch)
+    execute.return_value = runner.ExecutionResult(stdout="partial", stderr="failure", status=status, exit_code=1, elapsed_seconds=0.1)
+    page.button(key="run_example").click().run()
+    if status == "python_exception":
+        page.button(key="explain_prediction").click().run()
+        assert page.session_state["attempt"].state == "feedback_unavailable"
+    assert not page.exception
+    assert "submit_assessment" not in [button.key for button in page.button]
+    assert page.session_state["attempt"].live_feedback_request_attempts == 0
+    provider.assert_not_called()
+
+
+def test_mock_remains_default_and_run_only_never_calls_provider(monkeypatch):
+    provider = Mock()
+    monkeypatch.setattr(live_feedback, "generate_feedback", provider)
+    page = AppTest.from_file(str(APP_PATH)).run()
+    assert not [radio for radio in page.radio if radio.key == "feedback_mode"]
+    page.button(key="run_example").click().run()
+    page.run()
+    page.radio(key="mode").set_value(interaction.GUIDED).run()
+    assert page.radio(key="feedback_mode").value == interaction.MOCK
+    page.text_area(key="prediction_input").input("Prediction").run()
+    page.button(key="run_example").click().run()
+    page.button(key="explain_prediction").click().run()
+    assert page.session_state["attempt"].feedback == get_example("list_append").mock_explanation
+    provider.assert_not_called()
