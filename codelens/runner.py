@@ -20,6 +20,7 @@ class ExecutionResult:
     status: RunStatus
     elapsed_seconds: float
     error: str | None = None
+    exception_type: str | None = None
 
 
 # Only this wrapper's caught Exceptions are recognised as program exceptions.
@@ -31,9 +32,11 @@ import traceback
 
 try:
     runpy.run_path("example.py", run_name="__main__")
-except Exception:
+except Exception as exc:
     traceback.print_exc()
-    Path("python_exception").touch()
+    Path("python_exception").write_text(
+        f"{type(exc).__module__}.{type(exc).__qualname__}", encoding="utf-8"
+    )
     sys.exit(1)
 """
 
@@ -78,10 +81,17 @@ def run_example(example_id: str) -> ExecutionResult:
                 return result
 
             elapsed = perf_counter() - started
+            exception_type = None
+            metadata_error = None
             if completed.returncode == 0:
                 status: RunStatus = "success"
             elif completed.returncode == 1 and (working_directory / "python_exception").is_file():
-                status = "python_exception"
+                try:
+                    exception_type = (working_directory / "python_exception").read_text(encoding="utf-8")
+                    status = "python_exception"
+                except (OSError, UnicodeError) as exc:
+                    status = "abnormal_exit"
+                    metadata_error = f"Could not read exception metadata: {exc}"
             else:
                 status = "abnormal_exit"
 
@@ -89,6 +99,7 @@ def run_example(example_id: str) -> ExecutionResult:
                 stdout=completed.stdout, stderr=completed.stderr,
                 exit_code=completed.returncode, status=status,
                 elapsed_seconds=elapsed,
+                exception_type=exception_type, error=metadata_error,
             )
             return result
     except OSError as exc:

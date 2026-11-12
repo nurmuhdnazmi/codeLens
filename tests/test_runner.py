@@ -1,4 +1,5 @@
 from dataclasses import replace
+import ast
 import json
 from pathlib import Path
 import subprocess
@@ -31,6 +32,7 @@ def test_approved_example_returns_actual_evidence():
     assert result.exit_code == 0
     assert result.elapsed_seconds > 0
     assert result.error is None
+    assert result.exception_type is None
 
 
 def test_separate_runs_start_with_fresh_function_defaults():
@@ -118,6 +120,7 @@ def test_real_python_exceptions_are_recognised(monkeypatch, source, exception_na
     assert exception_name in result.stderr
     assert result.stdout == ("before failure\n" if exception_name == "ValueError" else "")
     assert result.elapsed_seconds > 0
+    assert result.exception_type == f"builtins.{exception_name}"
 
 
 @pytest.mark.parametrize("source, exit_code", [
@@ -213,3 +216,68 @@ def test_cleanup_failure_preserves_execution_evidence(monkeypatch, timeout):
     assert result.stderr == ("partial error\n" if timeout else "")
     assert result.exit_code == (None if timeout else 0)
     assert "cleanup" in result.error
+
+
+def test_average_preserves_partial_stdout_and_structured_zero_division_error():
+    result = runner.run_example("average")
+
+    assert result.status == "python_exception"
+    assert result.stdout == "4.0\n"
+    assert result.exit_code == 1
+    assert result.exception_type == "builtins.ZeroDivisionError"
+    assert "Traceback" in result.stderr
+    assert "ZeroDivisionError" in result.stderr
+
+
+def test_remove_duplicates_executes_without_assuming_set_iteration_order():
+    result = runner.run_example("remove_duplicates")
+
+    assert result.status == "success"
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    lines = [ast.literal_eval(line) for line in result.stdout.splitlines()]
+    assert len(lines[0]) == 3
+    assert set(lines[0]) == {3, 1, 2}
+    assert lines[1:] == [[3, 1, 3, 2], [], [5]]
+
+
+def test_printed_exception_name_is_not_exception_metadata(monkeypatch):
+    use_test_source(monkeypatch, "print('ZeroDivisionError: printed text')\nraise ValueError('actual failure')\n")
+
+    result = runner.run_example("list_append")
+
+    assert result.stdout == "ZeroDivisionError: printed text\n"
+    assert result.status == "python_exception"
+    assert result.exception_type == "builtins.ValueError"
+
+
+def test_printed_traceback_on_success_does_not_create_exception_metadata(monkeypatch):
+    use_test_source(monkeypatch, "print('Traceback: ZeroDivisionError: printed text')\n")
+
+    result = runner.run_example("list_append")
+
+    assert result.status == "success"
+    assert result.exception_type is None
+
+
+@pytest.mark.parametrize("read_error", [
+    PermissionError("test metadata failure"),
+    UnicodeDecodeError("utf-8", b"\xff", 0, 1, "test invalid metadata"),
+])
+def test_unreadable_exception_metadata_preserves_process_evidence(monkeypatch, read_error):
+    real_read = Path.read_text
+
+    def read_except_marker(file_path, *args, **options):
+        if file_path.name == "python_exception":
+            raise read_error
+        return real_read(file_path, *args, **options)
+
+    monkeypatch.setattr(runner.Path, "read_text", read_except_marker)
+
+    result = runner.run_example("average")
+
+    assert result.status == "abnormal_exit"
+    assert result.stdout == "4.0\n"
+    assert result.exit_code == 1
+    assert "ZeroDivisionError" in result.stderr
+    assert "metadata" in result.error

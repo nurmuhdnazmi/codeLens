@@ -27,7 +27,7 @@ def test_page_displays_complete_source_without_executing(monkeypatch):
     assert len(page.code) == 1
     # Streamlit trims the final newline.
     assert page.code[0].value == example.source.removesuffix("\n")
-    assert "Stage 4" in page.info[0].value
+    assert "Stage 5" in page.info[0].value
     assert page.button(key="run_example").label == "Run approved example"
     assert not page.text_area
     assert page.session_state["attempt"].mode == interaction.RUN_ONLY
@@ -480,3 +480,132 @@ def test_download_receives_only_current_metrics_json(monkeypatch):
     assert "My four-line prediction" not in json.dumps(downloads[-1])
     assert "Meets the task" not in json.dumps(downloads[-1])
     execute.assert_called_once_with("list_append")
+
+
+@pytest.mark.parametrize("example_id, answer", [
+    ("list_append", "Meets the task"),
+    ("average", "Does not meet the task"),
+    ("remove_duplicates", "Meets the task"),
+])
+@pytest.mark.parametrize("mode", [interaction.RUN_ONLY, interaction.GUIDED])
+def test_both_modes_execute_each_example_and_guided_flow_completes(monkeypatch, example_id, answer, mode):
+    execute = Mock(wraps=runner.run_example)
+    monkeypatch.setattr(runner, "run_example", execute)
+    page = AppTest.from_file(str(APP_PATH)).run()
+    page.selectbox(key="example_id").set_value(example_id).run()
+    page.radio(key="mode").set_value(mode).run()
+    example = get_example(example_id)
+    assert example.task in [text.value for text in page.markdown]
+    assert page.code[0].value == example.source.removesuffix("\n")
+    if mode == interaction.GUIDED:
+        assert page.text_area(key="prediction_input").label == example.prediction_prompt
+        page.text_area(key="prediction_input").input("My prediction for this example").run()
+    else:
+        assert not page.text_area
+
+    page.button(key="run_example").click().run()
+
+    assert not page.exception
+    attempt = page.session_state["attempt"]
+    assert attempt.example_id == example_id
+    assert attempt.state == "completed"
+    assert attempt.result.stdout.removesuffix("\n") in [block.value for block in page.code]
+    if example_id == "average":
+        assert attempt.result.stdout == "4.0\n"
+        assert attempt.result.exception_type == "builtins.ZeroDivisionError"
+        assert "ZeroDivisionError" in page.code[-1].value
+    if mode == interaction.RUN_ONLY:
+        assert "explain_prediction" not in [button.key for button in page.button]
+        assert "submit_assessment" not in [button.key for button in page.button]
+    else:
+        page.button(key="explain_prediction").click().run()
+        assert not page.exception
+        assert page.session_state["attempt"].feedback == example.mock_explanation
+        assert example.mock_explanation in [text.value for text in page.markdown]
+        assert "Mock feedback — predefined explanation; no LLM request." in [text.value for text in page.caption]
+        assert page.radio(key="assessment_choice").value is None
+        page.radio(key="assessment_choice").set_value(answer).run()
+        page.button(key="submit_assessment").click().run()
+        assert not page.exception
+        verified = page.session_state["attempt"]
+        assert verified.state == "verified"
+        assert verified.verification_correct is True
+        assert verified.assessment_choice == answer
+        assert example.verification.rationale in [text.value for text in page.markdown]
+        page.run()
+        assert page.session_state["attempt"] == verified
+    execute.assert_called_once_with(example_id)
+
+
+@pytest.mark.parametrize("phase", ["validation_error", "selected", "verified", "runner_failure"])
+def test_changing_example_clears_the_entire_attempt_and_visible_values(monkeypatch, phase):
+    clock = [10.0]
+    monkeypatch.setattr(interaction, "monotonic", lambda: clock[0])
+    page, execute = guided_page(monkeypatch)
+    if phase == "validation_error":
+        page.text_area(key="prediction_input").input(" ").run()
+        page.button(key="run_example").click().run()
+        assert page.error
+    else:
+        if phase == "runner_failure":
+            execute.return_value = runner.ExecutionResult(
+                stdout="stale partial output", stderr="stale failure", exit_code=None,
+                status="timeout", elapsed_seconds=2,
+            )
+        page.button(key="run_example").click().run()
+        if phase != "runner_failure":
+            page.button(key="explain_prediction").click().run()
+            page.radio(key="assessment_choice").set_value("Meets the task").run()
+            if phase == "verified":
+                page.button(key="submit_assessment").click().run()
+
+    calls_before_change = execute.call_count
+    clock[0] = 50.0
+    page.selectbox(key="example_id").set_value("average").run()
+
+    assert not page.exception
+    fresh = page.session_state["attempt"]
+    assert fresh.example_id == "average" and fresh.mode == interaction.GUIDED
+    assert fresh.state == "ready"
+    assert fresh.submitted_prediction is fresh.result is fresh.feedback is fresh.assessment_choice is None
+    assert fresh.verification_correct is fresh.validation_error is None
+    assert fresh.execution_count == fresh.mock_feedback_request_count == fresh.verification_submission_count == 0
+    assert fresh.created_at == 50.0
+    assert fresh.verification_started_at is fresh.prediction_duration_seconds is fresh.verification_duration_seconds is fresh.total_duration_seconds is None
+    assert fresh.metrics()["execution_duration_seconds"] is None
+    assert page.text_area(key="prediction_input").value == ""
+    assert page.code[0].value == get_example("average").source.removesuffix("\n")
+    assert len(page.code) == 1
+    assert not page.error and not page.warning
+    assert execute.call_count == calls_before_change
+    assert "submit_assessment" not in [button.key for button in page.button]
+
+    page.selectbox(key="example_id").set_value("list_append").run()
+    assert not page.exception
+    assert page.text_area(key="prediction_input").value == ""
+    if phase == "runner_failure":
+        execute.return_value = runner.ExecutionResult(stdout="fresh output", stderr="", exit_code=0, status="success", elapsed_seconds=0.01)
+    page.text_area(key="prediction_input").input("Fresh prediction").run()
+    page.button(key="run_example").click().run()
+    page.button(key="explain_prediction").click().run()
+    assert not page.exception
+    assert page.radio(key="assessment_choice").value is None
+
+
+def test_mode_change_and_reset_keep_the_selected_example(monkeypatch):
+    execute = Mock(wraps=runner.run_example)
+    monkeypatch.setattr(runner, "run_example", execute)
+    page = AppTest.from_file(str(APP_PATH)).run()
+    page.selectbox(key="example_id").set_value("average").run()
+    page.button(key="run_example").click().run()
+    page.radio(key="mode").set_value(interaction.GUIDED).run()
+    assert not page.exception
+    assert page.session_state["attempt"].example_id == "average"
+    assert page.session_state["attempt"].result is None
+    page.text_area(key="prediction_input").input("Draft prediction").run()
+    page.button(key="new_attempt").click().run()
+    assert not page.exception
+    assert page.selectbox(key="example_id").value == "average"
+    assert page.session_state["attempt"].example_id == "average"
+    assert page.text_area(key="prediction_input").value == ""
+    execute.assert_called_once_with("average")

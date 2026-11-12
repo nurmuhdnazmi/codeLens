@@ -36,9 +36,23 @@ def test_example_fields_cannot_be_reassigned():
         example.task = "Changed task"
 
 
-@pytest.mark.parametrize("example_id", ["unknown", "", "average", "remove_duplicates"])
+@pytest.mark.parametrize("example_id", ["unknown", "", "print('not an ID')"])
 def test_unknown_ids_are_rejected(example_id):
     from codelens.catalogue import get_example
 
     with pytest.raises(KeyError):
         get_example(example_id)
+
+
+def test_catalogue_lists_three_approved_examples_with_distinct_assessments():
+    from codelens.catalogue import list_examples
+
+    examples = list_examples()
+
+    assert isinstance(examples, tuple)
+    assert [(example.id, example.title, example.verification.answer) for example in examples] == [
+        ("list_append", "List append", "Meets the task"),
+        ("average", "Average", "Does not meet the task"),
+        ("remove_duplicates", "Remove duplicates", "Meets the task"),
+    ]
+    assert all(example.prediction_prompt and example.mock_explanation for example in examples)

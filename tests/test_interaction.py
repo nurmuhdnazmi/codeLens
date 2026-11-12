@@ -4,6 +4,7 @@ import json
 import pytest
 
 from codelens import interaction
+from codelens import runner
 from codelens.runner import ExecutionResult
 from codelens.catalogue import get_example
 
@@ -120,8 +121,8 @@ def test_a_new_attempt_has_no_previous_prediction_result_or_error():
     assert fresh.submitted_prediction is fresh.result is fresh.validation_error is None
 
 
-def completed_attempt(mode=interaction.GUIDED, status="success"):
-    return interaction.Attempt(mode=mode, example_id="list_append").begin("Prediction").finish(result_with_status(status))
+def completed_attempt(mode=interaction.GUIDED, status="success", example_id="list_append"):
+    return interaction.Attempt(mode=mode, example_id=example_id).begin("Prediction").finish(result_with_status(status))
 
 
 @pytest.mark.parametrize("phase", ["ready", "running"])
@@ -144,8 +145,9 @@ def test_run_only_cannot_request_feedback_or_submit_an_assessment():
 
 
 @pytest.mark.parametrize("status", ["timeout", "launch_failure", "abnormal_exit"])
-def test_process_failures_block_feedback_and_verification(status):
-    attempt = completed_attempt(status=status)
+@pytest.mark.parametrize("example_id", ["list_append", "average", "remove_duplicates"])
+def test_process_failures_block_feedback_and_verification(status, example_id):
+    attempt = completed_attempt(status=status, example_id=example_id)
 
     with pytest.raises(ValueError):
         attempt.request_feedback()
@@ -306,3 +308,46 @@ def test_new_attempt_clears_feedback_assessment_and_metrics(monkeypatch):
     assert fresh.metrics()["execution_duration_seconds"] is None
     now[0] = 35.0
     assert fresh.begin("Prediction").prediction_duration_seconds == 5.0
+
+
+@pytest.mark.parametrize("example_id, choice, correct", [
+    ("list_append", "Meets the task", True),
+    ("average", "Does not meet the task", True),
+    ("average", "Meets the task", False),
+    ("remove_duplicates", "Meets the task", True),
+])
+def test_each_example_uses_its_own_feedback_and_assessment(example_id, choice, correct):
+    result = runner.run_example(example_id)
+    attempt = interaction.Attempt(mode=interaction.GUIDED, example_id=example_id).begin("My prediction").finish(result)
+
+    explained = attempt.request_feedback()
+
+    assert explained.state == "feedback_ready"
+    assert explained.feedback == get_example(example_id).mock_explanation
+    assert explained.result == result
+    assessed = explained.submit_assessment(choice)
+    assert assessed.state == "verified"
+    assert assessed.verification_correct is correct
+    assert assessed.execution_count == assessed.mock_feedback_request_count == assessed.verification_submission_count == 1
+
+
+@pytest.mark.parametrize("status, exception_type", [
+    ("python_exception", "builtins.ValueError"),
+    ("python_exception", None),
+    ("success", None),
+])
+def test_average_feedback_does_not_infer_expected_exception_from_printed_text(status, exception_type):
+    result = ExecutionResult(
+        stdout="ZeroDivisionError: printed text\n", stderr="ZeroDivisionError: printed text\n",
+        exit_code=1 if status == "python_exception" else 0, status=status, elapsed_seconds=0.01,
+        exception_type=exception_type,
+    )
+    attempt = interaction.Attempt(mode=interaction.GUIDED, example_id="average").begin("Prediction").finish(result)
+
+    unavailable = attempt.request_feedback()
+
+    assert unavailable.state == "feedback_unavailable"
+    assert unavailable.feedback is None
+    assert unavailable.result == result
+    with pytest.raises(ValueError):
+        unavailable.submit_assessment("Does not meet the task")

@@ -2,13 +2,13 @@ import json
 
 import streamlit as st
 
-from codelens.catalogue import get_example
+from codelens.catalogue import get_example, list_examples
 from codelens import interaction, runner
 
 
 def reset_attempt():
     st.session_state["attempt"] = interaction.Attempt(
-        mode=st.session_state["mode"], example_id="list_append",
+        mode=st.session_state["mode"], example_id=st.session_state["example_id"],
     )
     st.session_state["prediction_input"] = ""
     st.session_state["assessment_choice"] = None
@@ -44,15 +44,22 @@ def show_stdout(result):
 
 st.set_page_config(page_title="CodeLens", layout="centered")
 st.title("CodeLens")
-st.info("Stage 4: one run per attempt.")
+st.info("Stage 5: one run per attempt.")
 
 if "mode" not in st.session_state:
     st.session_state["mode"] = interaction.RUN_ONLY
+if "example_id" not in st.session_state:
+    st.session_state["example_id"] = "list_append"
 if "attempt" not in st.session_state:
     reset_attempt()
 
 st.radio("Mode", interaction.MODES, key="mode", on_change=reset_attempt, horizontal=True)
-st.caption("Changing modes clears the current attempt.")
+st.selectbox(
+    "Example", tuple(example.id for example in list_examples()),
+    format_func=lambda example_id: get_example(example_id).title,
+    key="example_id", on_change=reset_attempt,
+)
+st.caption("Changing mode or example clears the current attempt.")
 st.button("Start new attempt", key="new_attempt", on_click=reset_attempt)
 
 attempt = st.session_state["attempt"]
@@ -72,7 +79,7 @@ state_caption.caption(f"Attempt state: {attempt.state}")
 prediction = ""
 if guided and attempt.state == "ready":
     prediction = st.text_area(
-        "Predict all four printed lines", key="prediction_input",
+        example.prediction_prompt, key="prediction_input",
         max_chars=interaction.MAX_PREDICTION_LENGTH,
     )
 if attempt.validation_error and attempt.state == "ready":
@@ -119,7 +126,7 @@ if attempt.mock_feedback_request_count:
     if attempt.feedback is not None:
         st.write(attempt.feedback)
     else:
-        st.warning("The predefined normal-run explanation is unavailable for this unexpected exception. Inspect the traceback above.")
+        st.warning("The predefined explanation is unavailable for this execution evidence. Inspect the output and traceback above.")
 
 if attempt.feedback is not None:
     question = example.verification

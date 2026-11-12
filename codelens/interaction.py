@@ -40,7 +40,7 @@ class Attempt:
 
         if self.mode == GUIDED:
             if not prediction.strip():
-                return replace(self, validation_error="Predict all four printed lines before running.")
+                return replace(self, validation_error=f"{get_example(self.example_id).prediction_prompt} before running.")
             if len(prediction) > MAX_PREDICTION_LENGTH:
                 return replace(self, validation_error="Keep your prediction within 2,000 characters.")
 
@@ -54,7 +54,7 @@ class Attempt:
     def finish(self, result: ExecutionResult) -> "Attempt":
         if self.state != "running":
             raise ValueError("Only a running attempt can accept a result.")
-        state = "completed" if result.status in ("success", "python_exception") else "failed"
+        state: Literal["completed", "failed"] = "completed" if result.status in ("success", "python_exception") else "failed"
         total = monotonic() - self.created_at if state == "completed" and self.mode == RUN_ONLY else None
         return replace(self, state=state, result=result, total_duration_seconds=total)
 
@@ -64,10 +64,18 @@ class Attempt:
             or self.result.status not in ("success", "python_exception")
         ):
             raise ValueError("Feedback requires guided mode and completed program evidence.")
-        if self.result.status == "python_exception":
+        example = get_example(self.example_id)
+        expected_exception = example.expected_exception_type
+        matches = (
+            self.result.status == "success" and expected_exception is None
+        ) or (
+            self.result.status == "python_exception" and expected_exception is not None
+            and self.result.exception_type == expected_exception
+        )
+        if not matches:
             return replace(self, state="feedback_unavailable", mock_feedback_request_count=1)
         return replace(
-            self, state="feedback_ready", feedback=get_example(self.example_id).mock_explanation,
+            self, state="feedback_ready", feedback=example.mock_explanation,
             mock_feedback_request_count=1, verification_started_at=monotonic(),
         )
 
