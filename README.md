@@ -1,6 +1,6 @@
 # CodeLens
 
-Word count: 335. Counts whitespace-separated prose words, including bullets and table cells; excludes headings, fenced code, table separators and this line; counts link labels only.
+Word count: 324
 
 CodeLens helps students practise checking Python code against task requirements. Its examples simulate AI-generated suggestions: users predict the result, run approved code, inspect evidence, request feedback and assess a proposed fix. Built for the University of Birmingham's Intelligent Interactive Systems module, it follows my Assignment 1 review of code comprehension and verification effort.
 
@@ -64,7 +64,7 @@ Remove-Item Env:GEMINI_API_KEY
 
 ChatGPT supported the concept and earlier reference prototype. Codex assisted code structure, implementation, test-case development and debugging.
 
-I chose the free-tier Gemini integration, configured access and tested List append and Average. I shared the responses with ChatGPT, which identified an unsupported inference. Codex revised the instructions, and I retested them; the limitation remained.
+I chose the free-tier Gemini integration, configured access and tested List append and Average. Codex revised the instructions, and I retested them; the limitation remained.
 
 Codex previously reported 170 passing tests, no broken dependencies and successful mypy checks. These are historical results, not re-run for this documentation revision.
 
