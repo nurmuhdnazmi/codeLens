@@ -21,13 +21,24 @@ def test_page_displays_complete_source_without_executing(monkeypatch):
     page = AppTest.from_file(str(APP_PATH)).run()
 
     assert not page.exception
-    assert page.title[0].value == "CodeLens"
-    assert example.title in [heading.value for heading in page.header]
+    assert page.main.title[0].value == example.title
+    assert page.container(key="task_brief").subheader[0].value == "Task"
+    assert page.container(key="code_review").code[0].value == example.source.removesuffix("\n")
+    assert page.sidebar.container(key="sidebar_brand").caption[0].value == "Python practice"
+    assert page.sidebar.container(key="mode_settings").radio(key="mode").value == interaction.RUN_ONLY
+    assert page.sidebar.button(key="new_attempt").proto.type == "secondary"
+    selector = page.segmented_control(key="example_id")
+    assert selector.value == "list_append"
+    assert selector.options == ["List append", "Average", "Remove duplicates"]
+    assert selector.proto.required
+    assert page.button(key="run_example").proto.type == "primary"
+    assert page.button(key="new_attempt").proto.type == "secondary"
+    assert example.title in [heading.value for heading in page.title]
     assert example.task in [text.value for text in page.markdown]
     assert len(page.code) == 1
     # Streamlit trims the final newline.
     assert page.code[0].value == example.source.removesuffix("\n")
-    assert "Stage 6" in page.info[0].value
+    assert not page.info
     assert page.button(key="run_example").label == "Run approved example"
     assert not page.text_area
     assert page.session_state["attempt"].mode == interaction.RUN_ONLY
@@ -48,6 +59,12 @@ def test_run_displays_real_evidence_and_reruns_preserve_it(monkeypatch):
     assert result.stdout == "[1]\n[1, 2]\n[3]\n[1, 2, 4]\n"
     assert result.stderr == ""
     assert result.status == "success"
+    evidence = page.container(key="execution_evidence")
+    assert evidence.subheader[0].value == "Execution evidence"
+    assert evidence.code[0].value == "[1]\n[1, 2]\n[3]\n[1, 2, 4]"
+    assert page.button(key="run_example").proto.type == "secondary"
+    metrics_panel = next(panel for panel in page.expander if panel.label == "Current-attempt metrics")
+    assert not metrics_panel.proto.expanded
     assert page.code[1].value == "[1]\n[1, 2]\n[3]\n[1, 2, 4]"
     assert "Status: success" in [text.value for text in page.markdown]
     assert any("Exit code: 0" in text.value for text in page.caption)
@@ -369,7 +386,9 @@ def test_complete_guided_flow_preserves_feedback_and_locks_assessment(monkeypatc
     example = get_example("list_append")
     page.button(key="run_example").click().run()
     assert example.verification.candidate_source.removesuffix("\n") not in [block.value for block in page.code]
-    assert page.columns[0].subheader[0].value == "Submitted prediction"
+    evidence = page.container(key="execution_evidence")
+    assert evidence.columns[0].subheader[0].value == "Submitted prediction"
+    assert page.button(key="explain_prediction").proto.type == "primary"
     assert page.columns[1].subheader[0].value == "stdout"
     assert page.columns[0].code[0].proto.language == page.columns[1].code[0].proto.language == "text"
 
@@ -379,11 +398,18 @@ def test_complete_guided_flow_preserves_feedback_and_locks_assessment(monkeypatc
     explained = page.session_state["attempt"]
     assert explained.state == "feedback_ready"
     assert explained.feedback == example.mock_explanation
+    feedback = page.container(key="feedback")
+    assert feedback.subheader[0].value == "Mock feedback"
+    assert example.mock_explanation in [text.value for text in feedback.markdown]
+    assert example.mock_explanation not in [text.value for text in page.container(key="execution_evidence").markdown]
+    assert page.button(key="explain_prediction").disabled
+    assert page.button(key="explain_prediction").proto.type == "secondary"
+    assert page.button(key="submit_assessment").proto.type == "primary"
     assert "Mock feedback — predefined explanation; no LLM request." in [text.value for text in page.caption]
     assert any("does not semantically assess" in text.value for text in page.caption)
     assert example.mock_explanation in [text.value for text in page.markdown]
     assert example.verification.candidate_source.removesuffix("\n") in [block.value for block in page.code]
-    assert page.radio(key="assessment_choice").value is None
+    assert page.container(key="fix_assessment").radio(key="assessment_choice").value is None
     assert tuple(page.radio(key="assessment_choice").options) == example.verification.choices
     assert example.verification.rationale not in [text.value for text in page.markdown]
 
@@ -412,6 +438,7 @@ def test_complete_guided_flow_preserves_feedback_and_locks_assessment(monkeypatc
     assert example.verification.rationale in [text.value for text in page.markdown]
     assert example.verification.candidate_source.removesuffix("\n") in [block.value for block in page.code]
     assert page.button(key="submit_assessment").disabled
+    assert not any(button.proto.type == "primary" for button in page.button)
     assert page.button(key="explain_prediction").disabled
     metrics = json.loads(page.json[0].value)
     assert metrics == verified.metrics()
@@ -492,7 +519,7 @@ def test_both_modes_execute_each_example_and_guided_flow_completes(monkeypatch, 
     execute = Mock(wraps=runner.run_example)
     monkeypatch.setattr(runner, "run_example", execute)
     page = AppTest.from_file(str(APP_PATH)).run()
-    page.selectbox(key="example_id").set_value(example_id).run()
+    page.segmented_control(key="example_id").set_value(example_id).run()
     page.radio(key="mode").set_value(mode).run()
     example = get_example(example_id)
     assert example.task in [text.value for text in page.markdown]
@@ -561,7 +588,7 @@ def test_changing_example_clears_the_entire_attempt_and_visible_values(monkeypat
 
     calls_before_change = execute.call_count
     clock[0] = 50.0
-    page.selectbox(key="example_id").set_value("average").run()
+    page.segmented_control(key="example_id").set_value("average").run()
 
     assert not page.exception
     fresh = page.session_state["attempt"]
@@ -580,7 +607,7 @@ def test_changing_example_clears_the_entire_attempt_and_visible_values(monkeypat
     assert execute.call_count == calls_before_change
     assert "submit_assessment" not in [button.key for button in page.button]
 
-    page.selectbox(key="example_id").set_value("list_append").run()
+    page.segmented_control(key="example_id").set_value("list_append").run()
     assert not page.exception
     assert page.text_area(key="prediction_input").value == ""
     if phase == "runner_failure":
@@ -596,7 +623,7 @@ def test_mode_change_and_reset_keep_the_selected_example(monkeypatch):
     execute = Mock(wraps=runner.run_example)
     monkeypatch.setattr(runner, "run_example", execute)
     page = AppTest.from_file(str(APP_PATH)).run()
-    page.selectbox(key="example_id").set_value("average").run()
+    page.segmented_control(key="example_id").set_value("average").run()
     page.button(key="run_example").click().run()
     page.radio(key="mode").set_value(interaction.GUIDED).run()
     assert not page.exception
@@ -605,7 +632,7 @@ def test_mode_change_and_reset_keep_the_selected_example(monkeypatch):
     page.text_area(key="prediction_input").input("Draft prediction").run()
     page.button(key="new_attempt").click().run()
     assert not page.exception
-    assert page.selectbox(key="example_id").value == "average"
+    assert page.segmented_control(key="example_id").value == "average"
     assert page.session_state["attempt"].example_id == "average"
     assert page.text_area(key="prediction_input").value == ""
     execute.assert_called_once_with("average")
@@ -651,6 +678,10 @@ def test_live_feedback_requires_click_and_explicit_retry_then_persists(monkeypat
     assert page.session_state["attempt"] == failed
     assert provider.call_count == 1
     assert page.button(key="explain_prediction").label == "Retry Gemini feedback"
+    assert page.button(key="explain_prediction").proto.type == "primary"
+    feedback = page.container(key="feedback")
+    assert feedback.subheader[0].value == "Live Gemini feedback"
+    assert any("quota" in notice.value for notice in feedback.error)
 
     page.button(key="explain_prediction").click().run()
 
@@ -705,7 +736,7 @@ def test_live_state_is_cleared_by_all_attempt_resets(monkeypatch, action):
     if action == "feedback":
         page.radio(key="feedback_mode").set_value(interaction.MOCK).run()
     elif action == "example":
-        page.selectbox(key="example_id").set_value("average").run()
+        page.segmented_control(key="example_id").set_value("average").run()
     elif action == "mode":
         page.radio(key="mode").set_value(interaction.RUN_ONLY).run()
     else:
