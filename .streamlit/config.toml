@@ -1,0 +1,36 @@
+[theme]
+base = "light"
+primaryColor = "#6236BD"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F4F6FC"
+textColor = "#17233B"
+linkColor = "#2457A6"
+borderColor = "#D5DDEB"
+blueColor = "#2457A6"
+blueTextColor = "#2457A6"
+blueBackgroundColor = "#EDF4FF"
+violetColor = "#6236BD"
+codeBackgroundColor = "#F5F7FC"
+codeTextColor = "#24324B"
+font = "Futura, 'Trebuchet MS', sans-serif"
+headingFont = "Futura, 'Trebuchet MS', sans-serif"
+codeFont = "monospace"
+baseFontSize = 16
+codeFontSize = "0.9375rem"
+headingFontSizes = ["2.25rem", "1.5rem", "1.125rem", "1rem", "1rem", "1rem"]
+headingFontWeights = [600, 600, 600, 600, 500, 500]
+baseRadius = "0.875rem"
+buttonRadius = "0.75rem"
+paddingTop = "1.75rem"
+paddingBottom = "3rem"
+
+[theme.sidebar]
+backgroundColor = "#F5F3FC"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#17233B"
+borderColor = "#DCD5ED"
+primaryColor = "#6236BD"
+linkColor = "#2457A6"
+codeBackgroundColor = "#FFFFFF"
+codeTextColor = "#24324B"
+paddingTop = "1rem"

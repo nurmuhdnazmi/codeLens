@@ -12,9 +12,14 @@ dependencies = ["streamlit>=1.40,<2", "google-genai==3.3.0"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<10"]
+e2e = ["playwright==1.65.2"]
 
 [tool.setuptools.packages.find]
 include = ["codelens*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "e2e: real-browser tests; enable explicitly with --run-e2e",
+    "committed_checkout: verify an isolated copy of the committed repository",
+]

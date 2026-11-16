@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 64" fill="none">
+  <title>CodeLens</title>
+  <circle cx="27" cy="27" r="19" fill="#F2EDFF" stroke="#2457A6" stroke-width="4"/>
+  <path d="m21 20-7 7 7 7m12-14 7 7-7 7" stroke="#6236BD" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="m42 42 13 13" stroke="#6236BD" stroke-width="6" stroke-linecap="round"/>
+  <text x="73" y="45" fill="#2457A6" font-family="Futura, 'Trebuchet MS', sans-serif" font-size="38" font-weight="700" letter-spacing="-1">CodeLens</text>
+</svg>
