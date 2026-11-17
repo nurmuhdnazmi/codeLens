@@ -13,7 +13,7 @@ All six supplied commits resolve in the available Git history. The table records
 | 3 | Run-only and guided modes, locked predictions and one execution per attempt, preserving the prediction before evidence appears. | Codex implemented attempt state and reported automated checks. | Committed interaction and interface tests exercise validation, persistence and resets. | [6654dfc](https://github.com/nurmuhdnazmi/codeLens/commit/6654dfc05808171aa915cb6cce34ecde9eaebc16) |
 | 4 | Predefined mock feedback, one local fix assessment and metrics, completing the guided flow without a provider request. | Codex implemented the flow and reported automated checks. I downloaded the metrics JSON and supplied it for inspection. | Committed assessment, timing and export tests; my reported download establishes that action only. | [5ba6227](https://github.com/nurmuhdnazmi/codeLens/commit/5ba6227713d2e9590ad9f34635aa3d4ebc191249) |
 | 5 | Average and Remove duplicates, adding an expected exception and a requirement that successful execution alone cannot establish. | Codex implemented the examples and reported automated checks. I reported that Stage 5 browser checks passed. | Committed real-execution, feedback, assessment and reset tests. The general browser report does not establish individual manual results. | [761906b](https://github.com/nurmuhdnazmi/codeLens/commit/761906b72013bac2a811ff21bf5042cc265b7946) |
-| 6 | Optional live Gemini explanations, explicit requests and retries, retaining local execution and grading. | Codex implemented the adapter and revised its instructions. I chose the free-tier integration, configured access, tested List append and Average, and retested the revision. ChatGPT reviewed the shared responses. | Committed adapter doubles and interaction/interface tests; reported live results below. The diff includes the revised instructions and focused prompt test. | [ca59b54](https://github.com/nurmuhdnazmi/codeLens/commit/ca59b5486069c82e2ff3c91d72c521d856de6b5f) |
+| 6 | Optional live Gemini explanations, explicit requests and retries, retaining local execution and grading. | Codex implemented the adapter and revised its instructions. I chose the free-tier integration, configured access, tested List append and Average, and retested the revision. | Committed adapter doubles and interaction/interface tests; reported live results below. The diff includes the revised instructions and focused prompt test. | [ca59b54](https://github.com/nurmuhdnazmi/codeLens/commit/ca59b5486069c82e2ff3c91d72c521d856de6b5f) |
 
 Stage 6 is the Gemini integration commit, not a final submission reference.
 
@@ -29,10 +29,16 @@ I retested the revision. Revised List append feedback identified the task violat
 
 The Stage 6 diff contains `test_prompt_distinguishes_task_prediction_and_observation_without_judging_user` in `tests/test_live_feedback.py`. It checks the constructed instructions and separated request fields, not whether a model follows them.
 
-No live Remove duplicates result is reported. Manual rerun-count, assessment-locking and fresh-install outcomes are not recorded here. No user-evaluation results are reported. Absence of a reported result does not establish that a check was not performed.
+No live Remove duplicates result is reported. Individual manual rerun-count and assessment-locking outcomes are not recorded here; later automated checks cover those behaviours. No user-evaluation results are reported. Absence of a reported result does not establish that a check was not performed.
+
+## Later browser and clean-checkout verification
+
+The [testing report](testing-report.md), recorded in commit [fe43ed7](https://github.com/nurmuhdnazmi/codeLens/commit/fe43ed789c5c87eebb0aba72a2d2aa12d86e9ba3), reports 220 passing Python and Playwright tests, including 50 Chromium cases across desktop and mobile viewports. It also records passing dependency and whitespace checks. These are recorded development results, not re-run for this documentation change.
+
+The initial clean-checkout cases failed because required UI assets were untracked. Commit [ce81da5](https://github.com/nurmuhdnazmi/codeLens/commit/ce81da5c4721433bb5ed57c2a8d8832db8053fbb) added the logo assets and Streamlit theme alongside the browser-test setup. The two clean-checkout cases then passed separately, followed by the complete 220-test suite. Those checks reused the existing virtual environment; a fresh dependency installation remains unverified. The testing report lists the remaining platform, provider and evaluation gaps.
 
 ## Documentation revision
 
-This revision checks source consistency, local Markdown targets, commit references, accidental credentials and whitespace. Application tests, dependency checks, mypy, the app and live requests were not run. Setup commands are instructions, not newly verified installation results; Windows execution remains unverified here.
+This documentation update checks the README prose count, local Markdown targets, recorded commit references and whitespace. It also acknowledges Codex assistance with report drafting, diagram construction and Playwright screenshot capture. Application tests, dependency checks, mypy, the app and live requests were not run for this documentation change. Setup commands are instructions, not newly verified installation results; Windows execution remains unverified here.
 
 See the [README](../README.md), [live feedback](live-feedback.md), [execution boundary](execution-boundary.md) and [metrics definitions](metrics.md).

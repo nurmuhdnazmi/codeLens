@@ -1,6 +1,6 @@
 # CodeLens
 
-Word count: 324
+Word count: 371
 
 CodeLens helps students practise checking Python code against task requirements. Its examples simulate AI-generated suggestions: users predict the result, run approved code, inspect evidence, request feedback and assess a proposed fix. Built for the University of Birmingham's Intelligent Interactive Systems module, it follows my Assignment 1 review of code comprehension and verification effort.
 
@@ -11,7 +11,7 @@ CodeLens helps students practise checking Python code against task requirements.
 | Implemented | Three examples; Run-only and guided modes; locked predictions; execution evidence; mock and live Gemini feedback; local fix assessment; JSON metrics. |
 | Simulated | Suggested solutions are constructed examples, not captured AI outputs. Mock explanations are predefined. |
 | Live checks | Reported for List append and Average. Revised List append feedback still made an unsupported inference about the user's reasoning. |
-| Verification gaps | No reported live check for Remove duplicates. Manual rerun-count, assessment-locking and fresh-install results are not recorded here. No user-evaluation results are reported. |
+| Verification gaps | No reported live check for Remove duplicates. Automated checks cover application behaviour; no participant evaluation or evidence of comprehension gains is reported. See the development record for checks and remaining gaps. |
 
 ## Technology stack
 
@@ -66,7 +66,7 @@ ChatGPT supported the concept and earlier reference prototype. Codex assisted co
 
 I chose the free-tier Gemini integration, configured access and tested List append and Average. Codex revised the instructions, and I retested them; the limitation remained.
 
-Codex previously reported 170 passing tests, no broken dependencies and successful mypy checks. These are historical results, not re-run for this documentation revision.
+The later verification record reports 220 passing Python and Playwright tests, including 50 Chromium cases, plus passing dependency and whitespace checks. A clean-checkout failure caused by missing UI assets was fixed and checked again. These are recorded development results, not tests rerun for this README revision.
 
 See the [development record](docs/development-record.md) for stages, reasons, checks and commit references. Gemini integration: [ca59b54](https://github.com/nurmuhdnazmi/codeLens/commit/ca59b5486069c82e2ff3c91d72c521d856de6b5f).
 
